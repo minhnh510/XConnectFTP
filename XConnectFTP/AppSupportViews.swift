@@ -36,6 +36,46 @@ struct AppSupportCommands: Commands {
     }
 }
 
+struct AppLanguagePicker: View {
+    @AppStorage(AppLanguage.storageKey) private var selectedLanguageRawValue = AppLanguage.system.rawValue
+    var showsLabel: Bool = true
+
+    private var selection: Binding<AppLanguage> {
+        Binding(
+            get: { AppLanguage(rawValue: selectedLanguageRawValue) ?? .system },
+            set: { selectedLanguageRawValue = $0.rawValue }
+        )
+    }
+
+    var body: some View {
+        Picker(selection: selection) {
+            ForEach(AppLanguage.allCases) { language in
+                Text(language.displayName).tag(language)
+            }
+        } label: {
+            if showsLabel {
+                Label("Language", systemImage: "globe")
+            } else {
+                EmptyView()
+            }
+        }
+        .pickerStyle(.menu)
+    }
+}
+
+struct SettingsView: View {
+    var body: some View {
+        Form {
+            Section("General") {
+                AppLanguagePicker()
+            }
+        }
+        .formStyle(.grouped)
+        .padding(20)
+        .frame(width: 420)
+    }
+}
+
 struct AboutWindowView: View {
     private var appIcon: NSImage {
         NSApp.applicationIconImage

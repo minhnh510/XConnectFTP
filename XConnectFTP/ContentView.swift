@@ -141,6 +141,9 @@ struct ContentView: View {
                 Spacer()
 
                 HStack {
+                    AppLanguagePicker(showsLabel: false)
+                        .frame(width: 170)
+
                     Button("Choose Local Root") {
                         viewModel.chooseLocalRoot()
                     }

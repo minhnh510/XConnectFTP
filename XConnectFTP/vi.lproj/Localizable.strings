@@ -45,9 +45,16 @@
 "Tên hiển thị" = "Tên hiển thị";
 "IP / Host" = "IP / Host";
 "Protocol" = "Giao thức";
+"FTP" = "FTP";
+"FTPS (Explicit TLS)" = "FTPS (TLS tường minh)";
 "Port" = "Cổng";
 "Username" = "Tên đăng nhập";
 "Password" = "Mật khẩu";
 "Remote path khởi tạo" = "Đường dẫn remote khởi tạo";
 "Cancel" = "Hủy";
 "Save" = "Lưu";
+"Language" = "Ngôn ngữ";
+"General" = "Chung";
+"Use System Language" = "Dùng ngôn ngữ hệ thống";
+"English" = "Tiếng Anh";
+"Vietnamese" = "Tiếng Việt";
