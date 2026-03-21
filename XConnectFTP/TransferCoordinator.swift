@@ -97,10 +97,10 @@ actor TransferCoordinator {
                 continue
             }
             if item.isDirectory && isRemoteDescendant(destinationDirectory, of: item.path) {
-                throw BrowserInteractionError.invalidDrop("Không thể thả thư mục \(item.name) vào bên trong chính nó.")
+                throw BrowserInteractionError.invalidDrop("Cannot move the folder %@ into itself.".localized(item.name))
             }
 
-            status("Moving \(index + 1)/\(total): \(item.name)")
+            status("Moving %lld/%lld: %@".localized(Int64(index + 1), Int64(total), item.name))
             try await ftpClient.moveItem(at: item.path, to: destinationPath)
         }
     }
@@ -143,13 +143,13 @@ actor TransferCoordinator {
                 continue
             }
             if isDirectoryURL(sourceURL), isInsideRoot(destinationDirectory, root: sourceURL) {
-                throw BrowserInteractionError.invalidDrop("Không thể thả thư mục \(sourceURL.lastPathComponent) vào bên trong chính nó.")
+                throw BrowserInteractionError.invalidDrop("Cannot move the folder %@ into itself.".localized(sourceURL.lastPathComponent))
             }
             if fileManager.fileExists(atPath: destinationURL.path) {
-                throw BrowserInteractionError.invalidDrop("Đích \(destinationURL.lastPathComponent) đã tồn tại.")
+                throw BrowserInteractionError.invalidDrop("Destination %@ already exists.".localized(destinationURL.lastPathComponent))
             }
 
-            status("Moving \(index + 1)/\(total): \(sourceURL.lastPathComponent)")
+            status("Moving %lld/%lld: %@".localized(Int64(index + 1), Int64(total), sourceURL.lastPathComponent))
             do {
                 try fileManager.moveItem(at: sourceURL, to: destinationURL)
             } catch {
@@ -184,7 +184,7 @@ actor TransferCoordinator {
                 throw BrowserInteractionError.externalLocalImportDisallowed
             }
             if isDirectoryURL(sourceURL), isInsideRoot(destinationDirectory, root: sourceURL) {
-                throw BrowserInteractionError.invalidDrop("Không thể copy thư mục \(sourceURL.lastPathComponent) vào bên trong chính nó.")
+                throw BrowserInteractionError.invalidDrop("Cannot copy the folder %@ into itself.".localized(sourceURL.lastPathComponent))
             }
 
             let destinationName = DuplicateNameResolver.uniqueName(
@@ -195,7 +195,7 @@ actor TransferCoordinator {
             )
             let destinationURL = destinationDirectory.appendingPathComponent(destinationName, isDirectory: isDirectoryURL(sourceURL))
 
-            status("Copying \(index + 1)/\(normalizedURLs.count): \(sourceURL.lastPathComponent)")
+            status("Copying %lld/%lld: %@".localized(Int64(index + 1), Int64(normalizedURLs.count), sourceURL.lastPathComponent))
             try fileManager.copyItem(at: sourceURL, to: destinationURL)
         }
     }
@@ -254,7 +254,7 @@ actor TransferCoordinator {
             )
             let destinationURL = localDirectory.appendingPathComponent(destinationName, isDirectory: item.isDirectory)
 
-            status("Copying via temp \(index + 1)/\(normalizedItems.count): \(item.name)")
+            status("Copying via temp %lld/%lld: %@".localized(Int64(index + 1), Int64(normalizedItems.count), item.name))
             let exportedItem = try await materialize(remoteItem: item)
             defer { Task {
                 await tempTransferStore.cleanupOperationDirectory(exportedItem.cleanupDirectoryURL)
@@ -279,7 +279,7 @@ actor TransferCoordinator {
             try Task.checkCancellation()
 
             if item.isDirectory && isRemoteDescendant(remoteDirectory, of: item.path) {
-                throw BrowserInteractionError.invalidDrop("Không thể copy thư mục \(item.name) vào bên trong chính nó.")
+                throw BrowserInteractionError.invalidDrop("Cannot copy the folder %@ into itself.".localized(item.name))
             }
 
             let destinationName = DuplicateNameResolver.uniqueName(
@@ -290,7 +290,7 @@ actor TransferCoordinator {
             )
             let destinationPath = FTPPath.join(remoteDirectory, child: destinationName)
 
-            status("Copying via temp \(index + 1)/\(normalizedItems.count): \(item.name)")
+            status("Copying via temp %lld/%lld: %@".localized(Int64(index + 1), Int64(normalizedItems.count), item.name))
             let exportedItem = try await materialize(remoteItem: item)
             defer { Task {
                 await tempTransferStore.cleanupOperationDirectory(exportedItem.cleanupDirectoryURL)
@@ -318,7 +318,7 @@ actor TransferCoordinator {
         }
 
         for (index, item) in orderedItems.enumerated() {
-            status("Deleting \(index + 1)/\(orderedItems.count): \(item.name)")
+            status("Deleting %lld/%lld: %@".localized(Int64(index + 1), Int64(orderedItems.count), item.name))
             try fileManager.removeItem(at: item.url)
         }
     }
@@ -347,7 +347,7 @@ actor TransferCoordinator {
         status: @escaping @Sendable (String) -> Void
     ) async throws {
         if isDirectoryURL(url) {
-            status("Uploading \(batchIndex)/\(batchTotal): \(url.lastPathComponent)")
+            status("Uploading %lld/%lld: %@".localized(Int64(batchIndex), Int64(batchTotal), url.lastPathComponent))
             try await ftpClient.createDirectory(
                 named: FTPPath.name(from: destinationPath),
                 in: FTPPath.parent(of: destinationPath)
@@ -366,7 +366,7 @@ actor TransferCoordinator {
             return
         }
 
-        status("Uploading \(batchIndex)/\(batchTotal): \(url.lastPathComponent)")
+        status("Uploading %lld/%lld: %@".localized(Int64(batchIndex), Int64(batchTotal), url.lastPathComponent))
         try await ftpClient.upload(localURL: url, toRemotePath: destinationPath) { snapshot in
             progress(Self.decorate(snapshot, itemIndex: batchIndex, totalItems: batchTotal))
         }
@@ -381,14 +381,14 @@ actor TransferCoordinator {
         status: @escaping @Sendable (String) -> Void
     ) async throws {
         if item.isDirectory {
-            status("Downloading \(batchIndex)/\(batchTotal): \(item.name)")
+            status("Downloading %lld/%lld: %@".localized(Int64(batchIndex), Int64(batchTotal), item.name))
             let destinationDirectory = localDirectory.appendingPathComponent(item.name, isDirectory: true)
             try FileManager.default.createDirectory(at: destinationDirectory, withIntermediateDirectories: true)
             try await downloadDirectoryContents(remoteItem: item, to: destinationDirectory)
             return
         }
 
-        status("Downloading \(batchIndex)/\(batchTotal): \(item.name)")
+        status("Downloading %lld/%lld: %@".localized(Int64(batchIndex), Int64(batchTotal), item.name))
         _ = try await ftpClient.download(remotePath: item.path, to: localDirectory) { snapshot in
             progress(Self.decorate(snapshot, itemIndex: batchIndex, totalItems: batchTotal))
         }

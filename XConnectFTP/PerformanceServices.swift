@@ -144,11 +144,11 @@ enum TransferVerificationError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .sizeMismatch(let expected, let actual):
-            return "Xác minh transfer thất bại: kích thước file không khớp (\(actual) != \(expected))."
+            return "Transfer verification failed: file size mismatch (%lld != %lld).".localized(actual, expected)
         case .checksumMismatch(let algorithm):
-            return "Xác minh transfer thất bại: checksum \(algorithm.rawValue) không khớp."
+            return "Transfer verification failed: %@ checksum does not match.".localized(algorithm.rawValue)
         case .unreadableLocalFile:
-            return "Không thể đọc file local để xác minh transfer."
+            return "Could not read the local file to verify the transfer.".localized
         }
     }
 }
@@ -580,7 +580,7 @@ final class StreamingFileSink {
         }
 
         guard FileManager.default.createFile(atPath: destinationURL.path, contents: nil) else {
-            throw FTPError.localFilesystem("Không thể tạo file local tại \(destinationURL.path).")
+            throw FTPError.localFilesystem("Could not create the local file at %@.".localized(destinationURL.path))
         }
 
         fileHandle = try FileHandle(forWritingTo: destinationURL)
@@ -624,7 +624,9 @@ struct DuplicateNameResolver {
     }
 
     static func copyName(for originalName: String, isDirectory: Bool, copyIndex: Int) -> String {
-        let suffix = copyIndex == 1 ? " copy" : " copy \(copyIndex)"
+        let suffix = copyIndex == 1
+            ? " copy".localized
+            : " copy %d".localized(copyIndex)
         guard !isDirectory else {
             return originalName + suffix
         }

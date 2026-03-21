@@ -9,8 +9,14 @@ import SwiftUI
 
 struct SiteEditorView: View {
     @Environment(\.dismiss) private var dismiss
+    @AppStorage(AppLanguage.storageKey) private var selectedLanguageRawValue = AppLanguage.system.rawValue
     @State private var draft: ConnectionProfileDraft
     @State private var validationMessage: String?
+
+    private var selectedLanguageLocale: Locale {
+        let language = AppLanguage(rawValue: selectedLanguageRawValue) ?? .system
+        return language.locale
+    }
 
     let onSave: (ConnectionProfileDraft) -> Bool
 
@@ -21,26 +27,26 @@ struct SiteEditorView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Saved Site")
+            Text("Saved Site".localized)
                 .font(.title2.weight(.semibold))
 
             Form {
-                TextField("Tên hiển thị", text: $draft.name)
-                TextField("IP / Host", text: $draft.host)
+                TextField("Tên hiển thị".localized, text: $draft.name)
+                TextField("IP / Host".localized, text: $draft.host)
 
                 HStack {
-                    Picker("Protocol", selection: $draft.protocolMode) {
+                    Picker("Protocol".localized, selection: $draft.protocolMode) {
                         ForEach(ProtocolMode.allCases) { mode in
-                            Text(mode.displayName).tag(mode)
+                            Text(mode.localizedDisplayName).tag(mode)
                         }
                     }
-                    TextField("Port", text: $draft.portText)
+                    TextField("Port".localized, text: $draft.portText)
                         .frame(width: 90)
                 }
 
-                TextField("Username", text: $draft.username)
-                SecureField("Password", text: $draft.password)
-                TextField("Remote path khởi tạo", text: $draft.initialRemotePath)
+                TextField("Username".localized, text: $draft.username)
+                SecureField("Password".localized, text: $draft.password)
+                TextField("Remote path khởi tạo".localized, text: $draft.initialRemotePath)
             }
             .formStyle(.grouped)
 
@@ -53,11 +59,11 @@ struct SiteEditorView: View {
             HStack {
                 Spacer()
 
-                Button("Cancel") {
+                Button("Cancel".localized) {
                     dismiss()
                 }
 
-                Button("Save") {
+                Button("Save".localized) {
                     do {
                         _ = try draft.buildProfile(existingID: nil)
                         if onSave(draft) {
@@ -70,6 +76,7 @@ struct SiteEditorView: View {
                 .keyboardShortcut(.defaultAction)
             }
         }
+        .environment(\.locale, selectedLanguageLocale)
         .padding(20)
         .frame(width: 460)
         .onChange(of: draft.protocolMode) { _, newMode in

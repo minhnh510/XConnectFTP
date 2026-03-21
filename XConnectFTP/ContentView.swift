@@ -10,13 +10,26 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct ContentView: View {
-    @StateObject private var viewModel = SessionViewModel()
+    @Environment(\.openSettings) private var openSettings
+    @AppStorage(AppLanguage.storageKey) private var selectedLanguageRawValue = AppLanguage.system.rawValue
+    @ObservedObject private var appleSyncController: AppleSyncController
+    @StateObject private var viewModel: SessionViewModel
     @Namespace private var localDragNamespace
     @Namespace private var remoteDragNamespace
     @State private var localPaneDropActive = false
     @State private var remotePaneDropActive = false
     @State private var localDropTargetID: LocalItem.ID?
     @State private var remoteDropTargetID: RemoteItem.ID?
+
+    private var selectedLanguageLocale: Locale {
+        let language = AppLanguage(rawValue: selectedLanguageRawValue) ?? .system
+        return language.locale
+    }
+
+    init(appleSyncController: AppleSyncController) {
+        self.appleSyncController = appleSyncController
+        _viewModel = StateObject(wrappedValue: SessionViewModel(appleSyncController: appleSyncController))
+    }
 
     var body: some View {
         NavigationSplitView {
@@ -29,7 +42,7 @@ struct ContentView: View {
                 viewModel.saveSiteEditor(draft)
             }
         }
-        .alert("Lỗi", isPresented: Binding(
+        .alert("Lỗi".localized, isPresented: Binding(
             get: { viewModel.errorMessage != nil },
             set: { newValue in
                 if !newValue {
@@ -37,7 +50,7 @@ struct ContentView: View {
                 }
             }
         )) {
-            Button("OK", role: .cancel) {
+            Button("OK".localized, role: .cancel) {
                 viewModel.errorMessage = nil
             }
         } message: {
@@ -58,6 +71,18 @@ struct ContentView: View {
         .onCommand(#selector(NSText.paste(_:))) {
             viewModel.pasteIntoFocusedPane()
         }
+        .environment(\.locale, selectedLanguageLocale)
+        .onChange(of: selectedLanguageRawValue) { _, _ in
+            viewModel.handleLanguageChange()
+        }
+        .onChange(of: viewModel.selectedProfileID) { _, _ in
+            viewModel.handleSelectedProfileChange()
+        }
+        .onChange(of: appleSyncController.syncGeneration) { _, _ in
+            Task {
+                await viewModel.handleAppleSyncConfigurationChange()
+            }
+        }
         .task {
             await viewModel.bootstrap()
         }
@@ -67,40 +92,55 @@ struct ContentView: View {
     private var sidebar: some View {
         VStack(spacing: 12) {
             HStack {
-                Text("Saved Sites")
+                Text("Saved Sites".localized)
                     .font(.title3.weight(.semibold))
                 Spacer()
-                Button {
-                    viewModel.openAddSiteEditor()
-                } label: {
-                    Image(systemName: "plus")
-                }
-                .buttonStyle(.borderless)
             }
+
+            Button {
+                viewModel.openAddSiteEditor()
+            } label: {
+                Label("New Site".localized, systemImage: "plus.circle.fill")
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
 
             List(viewModel.profiles, selection: $viewModel.selectedProfileID) { profile in
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(profile.name)
-                        .font(.headline)
-                    Text("\(profile.host):\(profile.port) • \(profile.protocolMode.displayName)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                .padding(.vertical, 4)
-            }
+                SavedSiteRow(
+                    profile: profile,
+                    isConnected: viewModel.isProfileConnected(profile),
+                    onConnect: { viewModel.connect(to: profile) },
+                    onDisconnect: { viewModel.disconnect(profile: profile) },
+                    onEdit: { viewModel.openEditSiteEditor(for: profile) },
+                    onDelete: { viewModel.deleteProfile(profile) }
+                )
+                .tag(profile.id)
+                .contextMenu {
+                    Button("Connect".localized) {
+                        viewModel.connect(to: profile)
+                    }
+                    .disabled(!viewModel.canConnect(profile: profile))
 
-            HStack {
-                Button("Edit") {
-                    viewModel.openEditSiteEditor()
-                }
-                .disabled(viewModel.selectedProfile == nil)
+                    Button("Disconnect".localized) {
+                        viewModel.disconnect(profile: profile)
+                    }
+                    .disabled(!viewModel.canDisconnect(profile: profile))
 
-                Button("Delete", role: .destructive) {
-                    viewModel.deleteSelectedProfile()
+                    Divider()
+
+                    Button("Edit".localized) {
+                        viewModel.openEditSiteEditor(for: profile)
+                    }
+
+                    Button("Delete".localized, role: .destructive) {
+                        viewModel.deleteProfile(profile)
+                    }
                 }
-                .disabled(viewModel.selectedProfile == nil)
+                .onTapGesture(count: 2) {
+                    viewModel.connect(to: profile)
+                }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding()
         .navigationSplitViewColumnWidth(min: 260, ideal: 300)
@@ -125,14 +165,21 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .center) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(viewModel.displayProfile?.name ?? "Chưa chọn site")
+                    Text(viewModel.displayProfile?.name ?? "Chưa chọn site".localized)
                         .font(.title3.weight(.semibold))
                     if let profile = viewModel.displayProfile {
-                        Text("\(profile.host):\(profile.port) • \(profile.username) • \(profile.protocolMode.displayName)")
+                        Text("\(profile.host):\(profile.port) • \(profile.username) • \(profile.protocolMode.localizedDisplayName)")
                             .font(.callout)
                             .foregroundStyle(.secondary)
+                        if let localRootSummary = viewModel.localRootSummary {
+                            Text(localRootSummary)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
                     } else {
-                        Text("Chọn hoặc tạo saved site để bắt đầu kết nối.")
+                        Text("Chọn hoặc tạo saved site để bắt đầu kết nối.".localized)
                             .font(.callout)
                             .foregroundStyle(.secondary)
                     }
@@ -141,19 +188,25 @@ struct ContentView: View {
                 Spacer()
 
                 HStack {
-                    AppLanguagePicker(showsLabel: false)
-                        .frame(width: 170)
+                    Button {
+                        openSettings()
+                    } label: {
+                        Image(systemName: "gearshape")
+                            .imageScale(.medium)
+                    }
+                    .help("Settings".localized)
 
-                    Button("Choose Local Root") {
+                    Button("Choose Local Root".localized) {
                         viewModel.chooseLocalRoot()
                     }
+                    .disabled(!viewModel.canChooseLocalRoot)
 
-                    Button("Connect") {
+                    Button("Connect".localized) {
                         viewModel.connect()
                     }
                     .disabled(!viewModel.canConnect)
 
-                    Button("Disconnect") {
+                    Button("Disconnect".localized) {
                         viewModel.disconnect()
                     }
                     .disabled(!viewModel.canDisconnect)
@@ -162,7 +215,7 @@ struct ContentView: View {
 
             if let warning = viewModel.insecureFTPWarningMessage {
                 HStack(alignment: .top, spacing: 10) {
-                    Label("Insecure FTP", systemImage: "exclamationmark.triangle.fill")
+                    Label("Insecure FTP".localized, systemImage: "exclamationmark.triangle.fill")
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.orange)
                         .padding(.horizontal, 10)
@@ -177,38 +230,38 @@ struct ContentView: View {
             }
 
             HStack {
-                Button("Refresh") {
+                Button("Refresh".localized) {
                     viewModel.refreshRemoteDirectory()
                 }
                 .disabled(!viewModel.isConnected || viewModel.isBusy)
 
-                Button("Upload") {
+                Button("Upload".localized) {
                     viewModel.uploadSelectedLocalItems()
                 }
                 .disabled(!viewModel.canUpload)
 
-                Button("Download") {
+                Button("Download".localized) {
                     viewModel.downloadSelectedRemoteItems()
                 }
                 .disabled(!viewModel.canDownload)
 
-                Button("New Folder") {
+                Button("New Folder".localized) {
                     viewModel.createRemoteFolder()
                 }
                 .disabled(!viewModel.isConnected || viewModel.isBusy)
 
-                Button("Rename") {
+                Button("Rename".localized) {
                     viewModel.renameFocusedSelection()
                 }
                 .disabled(!viewModel.canRenameFocusedSelection)
 
-                Button("Delete", role: .destructive) {
+                Button("Delete".localized, role: .destructive) {
                     viewModel.deleteFocusedSelection()
                 }
                 .disabled(!viewModel.canDeleteFocusedSelection)
 
                 if viewModel.isTransferActive {
-                    Button("Cancel Transfer", role: .destructive) {
+                    Button("Cancel Transfer".localized, role: .destructive) {
                         viewModel.cancelTransfer()
                     }
                     .disabled(viewModel.isBusy == false)
@@ -222,7 +275,7 @@ struct ContentView: View {
 
     private var localPane: some View {
         BrowserPane(
-            title: "Local",
+            title: "Local".localized,
             itemCount: viewModel.localRows.count,
             selectionCount: viewModel.selectedLocalItemIDs.count,
             isDropTargeted: localPaneDropActive || localDropTargetID != nil
@@ -245,10 +298,11 @@ struct ContentView: View {
                     .padding(.bottom, 8)
             } else {
                 ContentUnavailableView(
-                    "Chưa có thư mục local",
+                    "Chưa có thư mục local".localized,
                     systemImage: "folder.badge.questionmark",
-                    description: Text("Chọn một thư mục local root để duyệt và upload/download.")
+                    description: Text(viewModel.localPaneEmptyDescription)
                 )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
         .onTapGesture {
@@ -258,7 +312,7 @@ struct ContentView: View {
 
     private var remotePane: some View {
         BrowserPane(
-            title: "Remote",
+            title: "Remote".localized,
             itemCount: viewModel.remoteRows.count,
             selectionCount: viewModel.selectedRemoteItemIDs.count,
             isDropTargeted: remotePaneDropActive || remoteDropTargetID != nil
@@ -280,10 +334,11 @@ struct ContentView: View {
                     .padding(.bottom, 8)
             } else {
                 ContentUnavailableView(
-                    "Chưa kết nối remote",
+                    "Chưa kết nối remote".localized,
                     systemImage: "network.slash",
-                    description: Text("Kết nối tới một site FTP hoặc FTPS để duyệt file remote.")
+                    description: Text("Kết nối tới một site FTP hoặc FTPS để duyệt file remote.".localized)
                 )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
         .onTapGesture {
@@ -334,7 +389,7 @@ private struct LocalBrowserTable: View {
         let selection = $viewModel.selectedLocalItemIDs
 
         return Table(viewModel.localRows, selection: selection) {
-            TableColumn("Name") { row in
+            TableColumn("Name".localized) { row in
                 LocalTableNameCell(
                     viewModel: viewModel,
                     row: row,
@@ -342,14 +397,14 @@ private struct LocalBrowserTable: View {
                     dropTargetID: $dropTargetID
                 )
             }
-            TableColumn("Size") { row in
+            TableColumn("Size".localized) { row in
                 BrowserMetadataCell(
                     text: row.sizeText,
                     alignment: .trailing
                 )
             }
                 .width(min: 90, ideal: 110, max: 140)
-            TableColumn("Modified") { row in
+            TableColumn("Modified".localized) { row in
                 BrowserMetadataCell(
                     text: row.modifiedText,
                     alignment: .leading
@@ -368,30 +423,30 @@ private struct LocalBrowserTable: View {
             )
         }
         .contextMenu(forSelectionType: LocalItem.ID.self) { selectedIDs in
-            Button("Open") {
+            Button("Open".localized) {
                 applySelection(selectedIDs)
                 viewModel.openPrimarySelection()
             }
             .disabled(!canOpen(selectedIDs))
 
-            Button("Copy") {
+            Button("Copy".localized) {
                 applySelection(selectedIDs)
                 viewModel.copyFocusedSelection()
             }
             .disabled(selectedIDs.isEmpty)
 
-            Button("Paste") {
+            Button("Paste".localized) {
                 viewModel.paste(into: .local)
             }
             .disabled(!viewModel.canPaste(into: .local))
 
-            Button("Rename") {
+            Button("Rename".localized) {
                 applySelection(selectedIDs)
                 viewModel.renameFocusedSelection()
             }
             .disabled(selectedIDs.count != 1)
 
-            Button("Delete", role: .destructive) {
+            Button("Delete".localized, role: .destructive) {
                 applySelection(selectedIDs)
                 viewModel.deleteFocusedSelection()
             }
@@ -428,7 +483,7 @@ private struct RemoteBrowserTable: View {
         let selection = $viewModel.selectedRemoteItemIDs
 
         return Table(viewModel.remoteRows, selection: selection) {
-            TableColumn("Name") { row in
+            TableColumn("Name".localized) { row in
                 RemoteTableNameCell(
                     viewModel: viewModel,
                     row: row,
@@ -436,14 +491,14 @@ private struct RemoteBrowserTable: View {
                     dropTargetID: $dropTargetID
                 )
             }
-            TableColumn("Size") { row in
+            TableColumn("Size".localized) { row in
                 BrowserMetadataCell(
                     text: row.sizeText,
                     alignment: .trailing
                 )
             }
                 .width(min: 90, ideal: 110, max: 140)
-            TableColumn("Modified") { row in
+            TableColumn("Modified".localized) { row in
                 BrowserMetadataCell(
                     text: row.modifiedText,
                     alignment: .leading
@@ -462,36 +517,36 @@ private struct RemoteBrowserTable: View {
             )
         }
         .contextMenu(forSelectionType: RemoteItem.ID.self) { selectedIDs in
-            Button("Open") {
+            Button("Open".localized) {
                 applySelection(selectedIDs)
                 viewModel.openPrimarySelection()
             }
             .disabled(!canOpen(selectedIDs))
 
-            Button("Copy") {
+            Button("Copy".localized) {
                 applySelection(selectedIDs)
                 viewModel.copyFocusedSelection()
             }
             .disabled(selectedIDs.isEmpty)
 
-            Button("Paste") {
+            Button("Paste".localized) {
                 viewModel.paste(into: .remote)
             }
             .disabled(!viewModel.canPaste(into: .remote))
 
-            Button("Download") {
+            Button("Download".localized) {
                 applySelection(selectedIDs)
                 viewModel.downloadSelectedRemoteItems()
             }
             .disabled(selectedIDs.isEmpty)
 
-            Button("Rename") {
+            Button("Rename".localized) {
                 applySelection(selectedIDs)
                 viewModel.renameFocusedSelection()
             }
             .disabled(selectedIDs.count != 1)
 
-            Button("Delete", role: .destructive) {
+            Button("Delete".localized, role: .destructive) {
                 applySelection(selectedIDs)
                 viewModel.deleteFocusedSelection()
             }
@@ -700,6 +755,60 @@ private struct BrowserPane<Content: View>: View {
                 .stroke(isDropTargeted ? Color.accentColor : Color.clear, lineWidth: 2)
         }
         .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+    }
+}
+
+private struct SavedSiteRow: View {
+    let profile: ConnectionProfile
+    let isConnected: Bool
+    let onConnect: () -> Void
+    let onDisconnect: () -> Void
+    let onEdit: () -> Void
+    let onDelete: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 6) {
+                    Text(profile.name)
+                        .font(.headline)
+
+                    if isConnected {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.caption)
+                            .foregroundStyle(.green)
+                    }
+                }
+
+                Text("\(profile.host):\(profile.port) • \(profile.protocolMode.localizedDisplayName)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 8)
+
+            HStack(spacing: 4) {
+                Button(action: onEdit) {
+                    Image(systemName: "square.and.pencil")
+                        .symbolVariant(.fill)
+                }
+                .buttonStyle(.borderless)
+                .help("Edit".localized)
+
+                Button(role: .destructive, action: onDelete) {
+                    Image(systemName: "trash")
+                }
+                .buttonStyle(.borderless)
+                .help("Delete".localized)
+            }
+            .foregroundStyle(.secondary)
+        }
+        .padding(.vertical, 4)
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(Text(profile.name))
+        .accessibilityHint(Text(isConnected ? "Disconnect".localized : "Connect".localized))
     }
 }
 

@@ -22,6 +22,22 @@ final class CoreParsingTests: XCTestCase {
         XCTAssertEqual(profile.initialRemotePath, "/incoming")
     }
 
+    func testConnectionDraftPreservesExistingLocalRootPath() throws {
+        var draft = ConnectionProfileDraft()
+        draft.name = "Production"
+        draft.host = "192.168.1.10"
+        draft.portText = "21"
+        draft.username = "demo"
+        draft.password = "secret"
+
+        let profile = try draft.buildProfile(
+            existingID: UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"),
+            existingLocalRootPath: "/Users/demo/Documents"
+        )
+
+        XCTAssertEqual(profile.localRootPath, "/Users/demo/Documents")
+    }
+
     func testConnectionDraftRejectsInvalidPort() {
         var draft = ConnectionProfileDraft()
         draft.name = "Broken"

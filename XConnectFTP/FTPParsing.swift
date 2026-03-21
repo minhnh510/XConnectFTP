@@ -56,6 +56,7 @@ enum FTPError: LocalizedError {
     case invalidReply(String)
     case unexpectedReply(Int, String)
     case passiveModeUnavailable
+    case ftpsDataSessionResumptionRequired
     case localFilesystem(String)
     case trustRejected
     case operationCancelled
@@ -63,19 +64,21 @@ enum FTPError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .notConnected:
-            return "Chưa có kết nối FTP/FTPS đang hoạt động."
+            return "No FTP/FTPS connection is currently active.".localized
         case .invalidReply(let reply):
-            return "Server trả về phản hồi không hợp lệ: \(reply)"
+            return "The server returned an invalid reply: %@".localized(reply)
         case .unexpectedReply(let code, let message):
-            return "Server trả về mã \(code): \(message)"
+            return "The server returned code %d: %@".localized(code, message)
         case .passiveModeUnavailable:
-            return "Server không cung cấp endpoint cho passive mode."
+            return "The server did not provide a passive mode endpoint.".localized
+        case .ftpsDataSessionResumptionRequired:
+            return "The FTPS server requires TLS session reuse for data connections when using PROT P. The current version of XConnectFTP does not support this FTPS mode. Disable TLS session resumption on the server or use a different protocol or server.".localized
         case .localFilesystem(let message):
             return message
         case .trustRejected:
-            return "Kết nối FTPS bị hủy vì chứng chỉ không được chấp nhận."
+            return "The FTPS connection was canceled because the certificate was not accepted.".localized
         case .operationCancelled:
-            return "Tác vụ đã bị hủy."
+            return "The operation was canceled.".localized
         }
     }
 }

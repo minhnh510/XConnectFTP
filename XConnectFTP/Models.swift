@@ -16,9 +16,9 @@ enum ProtocolMode: String, CaseIterable, Codable, Identifiable {
     var displayName: String {
         switch self {
         case .ftp:
-            return "FTP"
+            return "FTP".localized
         case .ftpsExplicit:
-            return "FTPS (Explicit TLS)"
+            return "FTPS (Explicit TLS)".localized
         }
     }
 
@@ -35,6 +35,7 @@ struct ConnectionProfile: Identifiable, Codable, Hashable {
     var username: String
     var protocolMode: ProtocolMode
     var initialRemotePath: String?
+    var localRootPath: String?
 
     init(
         id: UUID = UUID(),
@@ -43,7 +44,8 @@ struct ConnectionProfile: Identifiable, Codable, Hashable {
         port: Int,
         username: String,
         protocolMode: ProtocolMode,
-        initialRemotePath: String? = nil
+        initialRemotePath: String? = nil,
+        localRootPath: String? = nil
     ) {
         self.id = id
         self.name = name
@@ -52,6 +54,7 @@ struct ConnectionProfile: Identifiable, Codable, Hashable {
         self.username = username
         self.protocolMode = protocolMode
         self.initialRemotePath = initialRemotePath
+        self.localRootPath = localRootPath
     }
 }
 
@@ -75,7 +78,7 @@ struct ConnectionProfileDraft {
         initialRemotePath = profile.initialRemotePath ?? ""
     }
 
-    func buildProfile(existingID: UUID?) throws -> ConnectionProfile {
+    func buildProfile(existingID: UUID?, existingLocalRootPath: String? = nil) throws -> ConnectionProfile {
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedHost = host.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedUser = username.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -83,19 +86,19 @@ struct ConnectionProfileDraft {
         let trimmedRemotePath = initialRemotePath.trimmingCharacters(in: .whitespacesAndNewlines)
 
         guard !trimmedName.isEmpty else {
-            throw ValidationError("Tên site không được để trống.")
+            throw ValidationError("Site name cannot be empty.".localized)
         }
         guard !trimmedHost.isEmpty else {
-            throw ValidationError("Host hoặc IP không được để trống.")
+            throw ValidationError("Host or IP cannot be empty.".localized)
         }
         guard let port = Int(portText), (1...65535).contains(port) else {
-            throw ValidationError("Port phải là số từ 1 đến 65535.")
+            throw ValidationError("Port must be a number from 1 to 65535.".localized)
         }
         guard !trimmedUser.isEmpty else {
-            throw ValidationError("Username không được để trống.")
+            throw ValidationError("Username cannot be empty.".localized)
         }
         guard !trimmedPassword.isEmpty else {
-            throw ValidationError("Password không được để trống.")
+            throw ValidationError("Password cannot be empty.".localized)
         }
 
         return ConnectionProfile(
@@ -105,7 +108,8 @@ struct ConnectionProfileDraft {
             port: port,
             username: trimmedUser,
             protocolMode: protocolMode,
-            initialRemotePath: trimmedRemotePath.isEmpty ? nil : trimmedRemotePath
+            initialRemotePath: trimmedRemotePath.isEmpty ? nil : trimmedRemotePath,
+            localRootPath: existingLocalRootPath
         )
     }
 }

@@ -41,11 +41,11 @@ enum AppLanguage: String, CaseIterable, Identifiable {
     var displayName: String {
         switch self {
         case .system:
-            return L10n.tr("Use System Language")
+            return "Use System Language".localized
         case .english:
-            return L10n.tr("English")
+            return "English".localized
         case .vietnamese:
-            return L10n.tr("Vietnamese")
+            return "Vietnamese".localized
         }
     }
 
@@ -71,5 +71,29 @@ enum L10n {
 
     static func format(_ key: String, _ arguments: CVarArg...) -> String {
         String(format: tr(key), locale: AppLanguage.current.locale, arguments: arguments)
+    }
+}
+
+extension String {
+    var localized: String {
+        L10n.tr(self)
+    }
+
+    func localized(_ arguments: CVarArg...) -> String {
+        let format = L10n.tr(self)
+        return withVaList(arguments) { pointer in
+            NSString(format: format, locale: AppLanguage.current.locale, arguments: pointer) as String
+        }
+    }
+}
+
+extension ProtocolMode {
+    var localizedDisplayName: String {
+        switch self {
+        case .ftp:
+            return "FTP".localized
+        case .ftpsExplicit:
+            return "FTPS (Explicit TLS)".localized
+        }
     }
 }

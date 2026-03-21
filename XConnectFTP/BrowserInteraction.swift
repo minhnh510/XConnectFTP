@@ -35,9 +35,9 @@ enum BrowserInteractionError: LocalizedError {
         case .invalidDrop(let message):
             return message
         case .externalLocalImportDisallowed:
-            return "Chỉ cho phép thả file local nằm trong local root hiện tại."
+            return "Only local files inside the current local root can be dropped here.".localized
         case .remoteExportUnavailable:
-            return "Không thể xuất remote item ra Finder trong trạng thái hiện tại."
+            return "The remote item cannot be exported to Finder in the current state.".localized
         }
     }
 }
@@ -80,7 +80,7 @@ struct BrowserTransferItem: Identifiable, Codable, Hashable, Transferable, Senda
 
         ProxyRepresentation(exporting: { item in
             guard let localURL = item.localURL else {
-                throw BrowserInteractionError.invalidDrop("Payload local URL không khả dụng.")
+                throw BrowserInteractionError.invalidDrop("The local URL payload is unavailable.".localized)
             }
             return localURL
         })

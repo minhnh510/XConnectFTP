@@ -92,8 +92,8 @@ private final class FTPSessionDelegate: NSObject, URLSessionDelegate, URLSession
                 return
             }
 
-            let message = (evaluationError as Error?)?.localizedDescription ?? "Không thể xác thực chứng chỉ của máy chủ."
-            let reason = "\(message)\nFingerprint: \(fingerprint)"
+            let message = sanitizedTrustMessage((evaluationError as Error?)?.localizedDescription, host: host)
+            let reason = "%@\nFingerprint: %@".localized(message, fingerprint)
             let allowed = await prompt(host, reason)
             if allowed {
                 await trustStore.insert(fingerprint)
@@ -113,6 +113,25 @@ private final class FTPSessionDelegate: NSObject, URLSessionDelegate, URLSession
         let digest = SHA256.hash(data: certificateData)
         return digest.map { String(format: "%02X", $0) }.joined(separator: ":")
     }
+
+    private func sanitizedTrustMessage(_ message: String?, host: String) -> String {
+        let genericMessage = "The certificate returned by %@ is not trusted.".localized(host)
+        guard let message, !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return genericMessage
+        }
+
+        let sanitizedQuoted = message.replacingOccurrences(
+            of: #"[\"“][^\"”]+[\"”] certificate is not trusted"#,
+            with: genericMessage,
+            options: .regularExpression
+        )
+        let sanitizedSingleQuoted = sanitizedQuoted.replacingOccurrences(
+            of: #"'[^']+' certificate is not trusted"#,
+            with: genericMessage,
+            options: .regularExpression
+        )
+        return sanitizedSingleQuoted
+    }
 }
 
 actor FTPStreamClient: FTPClientProtocol {
@@ -120,6 +139,11 @@ actor FTPStreamClient: FTPClientProtocol {
         case extendedPassive
         case passiveControlAddress
         case passiveServerAddress
+    }
+
+    private enum DataProtectionMode: String {
+        case clear = "C"
+        case protected = "P"
     }
 
     private enum TransferType: String {
@@ -144,6 +168,7 @@ actor FTPStreamClient: FTPClientProtocol {
     private var profile: ConnectionProfile?
     private var remoteDirectoryCache: [String: DirectorySnapshot<RemoteItem>] = [:]
     private var isTransferring = false
+    private var currentDataProtectionMode: DataProtectionMode = .clear
     private var currentTransferType: TransferType?
     private var workingDirectory: String?
 
@@ -166,6 +191,7 @@ actor FTPStreamClient: FTPClientProtocol {
         self.controlBuffer.removeAll(keepingCapacity: true)
         self.remoteDirectoryCache.removeAll(keepingCapacity: true)
         self.currentTransferType = nil
+        self.currentDataProtectionMode = .clear
         self.workingDirectory = nil
         await capabilityCache.reset()
 
@@ -186,10 +212,7 @@ actor FTPStreamClient: FTPClientProtocol {
                 throw FTPError.unexpectedReply(pbszReply.code, pbszReply.message)
             }
 
-            let protReply = try await sendCommand("PROT P")
-            guard protReply.code == 200 else {
-                throw FTPError.unexpectedReply(protReply.code, protReply.message)
-            }
+            try await setDataProtectionMode(.protected)
         }
 
         let userReply = try await sendCommand("USER \(sanitizeArgument(profile.username))")
@@ -336,7 +359,7 @@ actor FTPStreamClient: FTPClientProtocol {
     func upload(localURL: URL, toRemotePath remotePath: String, progress: @escaping @Sendable (TransferSnapshot) -> Void) async throws {
         guard let attributes = try? FileManager.default.attributesOfItem(atPath: localURL.path),
               let fileSize = attributes[.size] as? NSNumber else {
-            throw FTPError.localFilesystem("Không thể đọc file local để upload.")
+            throw FTPError.localFilesystem("Could not read the local file for upload.".localized)
         }
 
         try await setTransferType(.binary)
@@ -359,6 +382,10 @@ actor FTPStreamClient: FTPClientProtocol {
                 invalidateRemoteCache(for: remoteDirectory)
                 return
             } catch let error as FTPError {
+                if requiresFTPSDataSessionResumption(after: error) {
+                    throw FTPError.ftpsDataSessionResumptionRequired
+                }
+
                 if shouldRetryPassiveTransfer(after: error, attemptIndex: index, totalAttempts: strategies.count) {
                     lastPassiveError = error
                     continue
@@ -381,7 +408,7 @@ actor FTPStreamClient: FTPClientProtocol {
         do {
             try await transferData(
                 command: "RETR \(sanitizeArgument(normalizedRemotePath))",
-                progressTitle: "Downloading \(filename)",
+                progressTitle: "Downloading %@".localized(filename),
                 totalBytes: expectedSize,
                 progress: progress
             ) { chunk in
@@ -410,6 +437,7 @@ actor FTPStreamClient: FTPClientProtocol {
         controlBuffer.removeAll(keepingCapacity: true)
         remoteDirectoryCache.removeAll(keepingCapacity: true)
         isTransferring = false
+        currentDataProtectionMode = .clear
         workingDirectory = nil
         currentTransferType = nil
         await capabilityCache.reset()
@@ -444,6 +472,10 @@ actor FTPStreamClient: FTPClientProtocol {
                 )
                 return
             } catch let error as FTPError {
+                if requiresFTPSDataSessionResumption(after: error) {
+                    throw FTPError.ftpsDataSessionResumptionRequired
+                }
+
                 if shouldRetryPassiveTransfer(after: error, attemptIndex: index, totalAttempts: strategies.count) {
                     lastPassiveError = error
                     continue
@@ -523,7 +555,7 @@ actor FTPStreamClient: FTPClientProtocol {
             try await write(chunk, to: dataTask)
             transferredBytes += Int64(chunk.count)
             if let snapshot = await progressCoalescer.submit(TransferSnapshot(
-                title: "Uploading \(localURL.lastPathComponent)",
+                title: "Uploading %@".localized(localURL.lastPathComponent),
                 transferredBytes: transferredBytes,
                 totalBytes: expectedSize
             )) {
@@ -657,9 +689,26 @@ actor FTPStreamClient: FTPClientProtocol {
     }
 
     private func beginProtectedDataTransferIfNeeded(on task: URLSessionStreamTask) {
-        if profile?.protocolMode == .ftpsExplicit {
+        if profile?.protocolMode == .ftpsExplicit, currentDataProtectionMode == .protected {
             task.startSecureConnection()
         }
+    }
+
+    private func setDataProtectionMode(_ mode: DataProtectionMode) async throws {
+        guard profile?.protocolMode == .ftpsExplicit else {
+            currentDataProtectionMode = .clear
+            return
+        }
+
+        guard currentDataProtectionMode != mode else {
+            return
+        }
+
+        let reply = try await sendCommand("PROT \(mode.rawValue)")
+        guard reply.code == 200 else {
+            throw FTPError.unexpectedReply(reply.code, reply.message)
+        }
+        currentDataProtectionMode = mode
     }
 
     private func sendCommand(_ command: String) async throws -> FTPReply {
@@ -718,7 +767,7 @@ actor FTPStreamClient: FTPClientProtocol {
             }
             if atEOF {
                 if controlBuffer.isEmpty {
-                    throw FTPError.invalidReply("Kết nối điều khiển đã bị đóng.")
+                    throw FTPError.invalidReply("The control connection was closed.".localized)
                 }
                 let line = String(decoding: controlBuffer, as: UTF8.self)
                     .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1021,6 +1070,30 @@ actor FTPStreamClient: FTPClientProtocol {
         default:
             return false
         }
+    }
+
+    private func requiresFTPSDataSessionResumption(after error: FTPError) -> Bool {
+        guard profile?.protocolMode == .ftpsExplicit, currentDataProtectionMode == .protected else {
+            return false
+        }
+
+        guard case .unexpectedReply(let code, let message) = error else {
+            return false
+        }
+
+        let normalizedMessage = message.lowercased()
+        if code == 425 {
+            return normalizedMessage.contains("tls session of data connection not resumed")
+                || normalizedMessage.contains("tls session not resumed")
+                || normalizedMessage.contains("data connection not resumed")
+        }
+
+        if code == 534 {
+            return normalizedMessage.contains("protection level c not allowed")
+                || normalizedMessage.contains("tls session of data connection not resumed")
+        }
+
+        return false
     }
 
     private func sortRemoteItems(_ items: [RemoteItem]) -> [RemoteItem] {

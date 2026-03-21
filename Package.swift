@@ -19,11 +19,11 @@ let package = Package(
             path: "XConnectFTP",
             exclude: [
                 "Assets.xcassets",
+                "AppleSync.swift",
                 "AppSupportViews.swift",
                 "BrowserInteraction.swift",
                 "ContentView.swift",
                 "FTPStreamClient.swift",
-                "Localization.swift",
                 "SessionViewModel.swift",
                 "SiteEditorView.swift",
                 "Stores.swift",
@@ -32,6 +32,7 @@ let package = Package(
                 "XConnectFTPApp.swift"
             ],
             sources: [
+                "Localization.swift",
                 "Models.swift",
                 "FTPParsing.swift",
                 "PerformanceServices.swift"

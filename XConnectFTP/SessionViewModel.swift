@@ -179,9 +179,10 @@ final class SessionViewModel: ObservableObject {
     @Published var isPresentingSiteEditor = false
     @Published var siteEditorDraft = ConnectionProfileDraft()
     @Published var errorMessage: String?
-    @Published var statusMessage = "Chưa kết nối."
+    @Published var statusMessage = "Not connected.".localized
 
     private let connectionStore: ConnectionStore
+    private let appleSyncController: AppleSyncController
     private let bookmarkStore: BookmarkStore
     private let localDirectoryService: LocalDirectoryService
     private let localDirectoryWatcher = LocalDirectoryWatcher()
@@ -204,6 +205,7 @@ final class SessionViewModel: ObservableObject {
     let transferProgressModel = TransferProgressModel()
 
     init(
+        appleSyncController: AppleSyncController,
         connectionStore: ConnectionStore = ConnectionStore(),
         bookmarkStore: BookmarkStore = BookmarkStore(),
         localDirectoryService: LocalDirectoryService = LocalDirectoryService(),
@@ -213,6 +215,7 @@ final class SessionViewModel: ObservableObject {
             }
         })
     ) {
+        self.appleSyncController = appleSyncController
         self.connectionStore = connectionStore
         self.bookmarkStore = bookmarkStore
         self.localDirectoryService = localDirectoryService
@@ -242,6 +245,10 @@ final class SessionViewModel: ObservableObject {
     }
 
     var displayProfile: ConnectionProfile? {
+        connectedProfile ?? selectedProfile
+    }
+
+    var activeLocalRootProfile: ConnectionProfile? {
         connectedProfile ?? selectedProfile
     }
 
@@ -277,16 +284,42 @@ final class SessionViewModel: ObservableObject {
         isConnected && !isBusy
     }
 
+    var canChooseLocalRoot: Bool {
+        !isBusy && activeLocalRootProfile != nil
+    }
+
     var insecureFTPWarningMessage: String? {
         guard displayProfile?.protocolMode == .ftp else {
             return nil
         }
 
         if isConnected {
-            return "Kết nối hiện tại đang dùng FTP không mã hóa. Username, password và dữ liệu có thể bị đọc trên đường truyền."
+            return "Current connection uses unencrypted FTP. Username, password, and data may be observed in transit.".localized
         }
 
-        return "FTP không mã hóa username, password và dữ liệu. Chỉ dùng khi server không hỗ trợ FTPS hoặc bạn chấp nhận rủi ro này."
+        return "FTP is unencrypted for username, password, and data. Use it only when the server does not support FTPS or when you accept the risk.".localized
+    }
+
+    var localRootSummary: String? {
+        if let localRootURL {
+            return "Local root: %@".localized(localRootURL.path)
+        }
+        if let savedPath = activeLocalRootProfile?.localRootPath {
+            return "Saved local root for this site: %@".localized(savedPath)
+        }
+        return nil
+    }
+
+    var localPaneEmptyDescription: String {
+        guard let activeLocalRootProfile else {
+            return "Choose or create a saved site, then choose a local root folder.".localized
+        }
+
+        if let savedPath = activeLocalRootProfile.localRootPath {
+            return "Saved local root for this site: %@. Choose Local Root to grant access on this Mac.".localized(savedPath)
+        }
+
+        return "Choose a local root folder for this site to browse and upload/download.".localized
     }
 
     var canUpload: Bool {
@@ -331,8 +364,31 @@ final class SessionViewModel: ObservableObject {
             selectedProfileID = loadedProfiles.first?.id
         }
 
-        restoreLocalRootIfPossible()
+        await syncSavedSitesIfNeeded()
+
+        restoreLocalRootForCurrentProfile()
         await transferCoordinator.sweepTemporaryArtifacts()
+    }
+
+    func handleLanguageChange() {
+        guard !isBusy else {
+            objectWillChange.send()
+            return
+        }
+
+        statusMessage = localizedStatusMessageForCurrentState()
+    }
+
+    func handleAppleSyncConfigurationChange() async {
+        await syncSavedSitesIfNeeded()
+    }
+
+    func handleSelectedProfileChange() {
+        guard hasBootstrapped else {
+            return
+        }
+
+        restoreLocalRootForCurrentProfile()
     }
 
     func canCopy(from pane: BrowserPaneKind) -> Bool {
@@ -377,10 +433,15 @@ final class SessionViewModel: ObservableObject {
 
     func openEditSiteEditor() {
         guard let selectedProfile else { return }
+        openEditSiteEditor(for: selectedProfile)
+    }
+
+    func openEditSiteEditor(for profile: ConnectionProfile) {
+        selectedProfileID = profile.id
         do {
-            let password = try connectionStore.password(for: selectedProfile)
-            editingProfileID = selectedProfile.id
-            siteEditorDraft = ConnectionProfileDraft(profile: selectedProfile, password: password)
+            let password = try connectionStore.password(for: profile)
+            editingProfileID = profile.id
+            siteEditorDraft = ConnectionProfileDraft(profile: profile, password: password)
             isPresentingSiteEditor = true
         } catch {
             present(error)
@@ -390,12 +451,19 @@ final class SessionViewModel: ObservableObject {
     @discardableResult
     func saveSiteEditor(_ draft: ConnectionProfileDraft) -> Bool {
         do {
-            let profile = try draft.buildProfile(existingID: editingProfileID)
+            let profile = try draft.buildProfile(
+                existingID: editingProfileID,
+                existingLocalRootPath: profiles.first(where: { $0.id == editingProfileID })?.localRootPath
+            )
             let updatedProfiles = try connectionStore.save(profile: profile, password: draft.password)
             profiles = updatedProfiles
             selectedProfileID = profile.id
             isPresentingSiteEditor = false
-            statusMessage = "Đã lưu site \(profile.name)."
+            statusMessage = "Saved site %@.".localized(profile.name)
+            restoreLocalRootForCurrentProfile()
+            Task {
+                await self.syncSavedSitesIfNeeded()
+            }
             return true
         } catch {
             present(error)
@@ -405,9 +473,14 @@ final class SessionViewModel: ObservableObject {
 
     func deleteSelectedProfile() {
         guard let selectedProfile else { return }
+        deleteProfile(selectedProfile)
+    }
+
+    func deleteProfile(_ profile: ConnectionProfile) {
+        selectedProfileID = profile.id
         guard CertificatePrompt.presentDeleteDialog(
-            title: "Xóa site đã lưu",
-            message: "Bạn có chắc muốn xóa site \(selectedProfile.name)?"
+            title: "Delete Saved Site".localized,
+            message: "Are you sure you want to delete the saved site %@?".localized(profile.name)
         ) else {
             return
         }
@@ -415,23 +488,18 @@ final class SessionViewModel: ObservableObject {
         Task { @MainActor [weak self] in
             guard let self else { return }
 
-            if self.connectedProfileID == selectedProfile.id {
+            if self.connectedProfileID == profile.id {
                 await self.ftpClient.disconnect()
-                self.isConnected = false
-                self.connectedProfileID = nil
-                self.remoteItems = []
-                self.remoteRows = []
-                self.remoteSnapshot = nil
-                self.remoteCurrentPath = "/"
-                self.selectedRemoteItemIDs = []
-                self.isTransferActive = false
-                self.transferProgressModel.clear()
+                self.resetRemoteSessionState()
             }
 
             do {
-                self.profiles = try self.connectionStore.delete(profile: selectedProfile)
+                self.profiles = try self.connectionStore.delete(profile: profile)
+                self.bookmarkStore.clearRootBookmark(for: profile.id)
                 self.selectedProfileID = self.profiles.first?.id
-                self.statusMessage = "Đã xóa site \(selectedProfile.name)."
+                self.statusMessage = "Deleted site %@.".localized(profile.name)
+                self.restoreLocalRootForCurrentProfile()
+                await self.syncSavedSitesIfNeeded()
             } catch {
                 self.present(error)
             }
@@ -439,49 +507,71 @@ final class SessionViewModel: ObservableObject {
     }
 
     func connect() {
-        guard let profile = selectedProfile else { return }
-        runTask(status: "Đang kết nối tới \(profile.host)...") { viewModel in
+        guard let selectedProfile else { return }
+        connect(to: selectedProfile)
+    }
+
+    func connect(to profile: ConnectionProfile) {
+        guard canConnect(profile: profile) else { return }
+        selectedProfileID = profile.id
+        runTask(status: "Connecting to %@...".localized(profile.host)) { viewModel in
             await viewModel.transferCoordinator.sweepTemporaryArtifacts()
             let password = try viewModel.connectionStore.password(for: profile)
             let workingDirectory = try await viewModel.ftpClient.connect(profile: profile, password: password)
             viewModel.connectedProfileID = profile.id
             viewModel.isConnected = true
             viewModel.remoteCurrentPath = workingDirectory
-            viewModel.statusMessage = profile.protocolMode == .ftp
-                ? "Đã kết nối tới \(profile.host) qua FTP không mã hóa."
-                : "Đã kết nối tới \(profile.host)."
+            viewModel.restoreLocalRootForCurrentProfile()
+            viewModel.statusMessage = viewModel.localizedConnectedStatusMessage(for: profile)
             try await viewModel.refreshRemoteDirectory(path: workingDirectory, forceRefresh: true)
         }
     }
 
     func disconnect() {
-        runTask(status: "Đang ngắt kết nối...") { viewModel in
+        runTask(status: "Disconnecting...".localized) { viewModel in
             await viewModel.ftpClient.disconnect()
-            viewModel.connectedProfileID = nil
-            viewModel.isConnected = false
-            viewModel.remoteItems = []
-            viewModel.remoteRows = []
-            viewModel.remoteSnapshot = nil
-            viewModel.remoteCurrentPath = "/"
-            viewModel.selectedRemoteItemIDs = []
-            viewModel.isTransferActive = false
-            viewModel.transferProgressModel.clear()
-            viewModel.statusMessage = "Đã ngắt kết nối."
+            viewModel.resetRemoteSessionState()
+            viewModel.restoreLocalRootForCurrentProfile()
+            viewModel.statusMessage = "Disconnected.".localized
         }
     }
 
+    func disconnect(profile: ConnectionProfile) {
+        guard canDisconnect(profile: profile) else { return }
+        selectedProfileID = profile.id
+        disconnect()
+    }
+
+    func canConnect(profile _: ConnectionProfile) -> Bool {
+        return !isBusy && !isConnected
+    }
+
+    func canDisconnect(profile: ConnectionProfile) -> Bool {
+        !isBusy && isConnected && connectedProfileID == profile.id
+    }
+
+    func isProfileConnected(_ profile: ConnectionProfile) -> Bool {
+        isConnected && connectedProfileID == profile.id
+    }
+
     func chooseLocalRoot() {
+        guard let profile = activeLocalRootProfile else { return }
+
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
-        panel.prompt = "Chọn thư mục"
-        panel.message = "Chọn thư mục local gốc để duyệt trong ứng dụng."
+        panel.prompt = "Choose Folder".localized
+        panel.message = "Choose the local root folder to browse inside the app.".localized
 
         if panel.runModal() == .OK, let url = panel.url {
             do {
-                try activateLocalRoot(url, persistBookmark: true)
-                statusMessage = "Đã chọn local root: \(url.path)"
+                try activateLocalRoot(url, persistBookmark: true, for: profile.id)
+                try updateLocalRootPath(url.path, for: profile.id)
+                statusMessage = "Selected local root: %@".localized(url.path)
+                Task {
+                    await self.syncSavedSitesIfNeeded()
+                }
             } catch {
                 present(error)
             }
@@ -511,7 +601,7 @@ final class SessionViewModel: ObservableObject {
         guard isConnected, remoteCurrentPath != "/" else { return }
         focusedPane = .remote
         let parentPath = FTPPath.parent(of: remoteCurrentPath)
-        runTask(status: "Đang mở thư mục cha...") { viewModel in
+        runTask(status: "Opening parent folder...".localized) { viewModel in
             let resolvedPath = try await viewModel.ftpClient.changeDirectory(to: parentPath)
             try await viewModel.refreshRemoteDirectory(path: resolvedPath)
         }
@@ -520,7 +610,7 @@ final class SessionViewModel: ObservableObject {
     func enterRemoteItem(_ item: RemoteItem) {
         guard item.isDirectory else { return }
         focusedPane = .remote
-        runTask(status: "Đang mở \(item.name)...") { viewModel in
+        runTask(status: "Opening %@...".localized(item.name)) { viewModel in
             let resolvedPath = try await viewModel.ftpClient.changeDirectory(to: item.path)
             try await viewModel.refreshRemoteDirectory(path: resolvedPath)
         }
@@ -529,7 +619,7 @@ final class SessionViewModel: ObservableObject {
     func refreshRemoteDirectory() {
         guard isConnected else { return }
         focusedPane = .remote
-        runTask(status: "Đang làm mới thư mục remote...") { viewModel in
+        runTask(status: "Refreshing remote folder...".localized) { viewModel in
             try await viewModel.refreshRemoteDirectory(path: viewModel.remoteCurrentPath, forceRefresh: true)
         }
     }
@@ -540,16 +630,19 @@ final class SessionViewModel: ObservableObject {
 
         let targetDirectory = destinationDirectory ?? remoteCurrentPath
         focusedPane = .local
-        runTransferTask(status: "Đang upload \(items.count) item(s)...") { viewModel in
+        runTransferTask(status: "Uploading %lld item(s)...".localized(Int64(items.count))) { viewModel in
             try await viewModel.transferCoordinator.upload(
                 items: items,
                 to: targetDirectory,
                 progress: viewModel.progressReporter(),
                 status: viewModel.statusReporter()
             )
-            viewModel.statusMessage = items.count == 1
-                ? "Đã upload \(items[0].name)."
-                : "Đã upload \(items.count) items."
+            viewModel.statusMessage = viewModel.localizedSingleOrMany(
+                count: items.count,
+                name: items[0].name,
+                singularKey: "Uploaded %@.",
+                pluralKey: "Uploaded %lld items."
+            )
             try await viewModel.refreshRemoteDirectory(path: viewModel.remoteCurrentPath, forceRefresh: true)
         }
     }
@@ -560,7 +653,7 @@ final class SessionViewModel: ObservableObject {
         guard isConnected, !items.isEmpty, let targetDirectory else { return }
 
         focusedPane = .remote
-        runTransferTask(status: "Đang download \(items.count) item(s)...") { viewModel in
+        runTransferTask(status: "Downloading %lld item(s)...".localized(Int64(items.count))) { viewModel in
             try await viewModel.transferCoordinator.download(
                 items: items,
                 to: targetDirectory,
@@ -569,26 +662,29 @@ final class SessionViewModel: ObservableObject {
             )
             await viewModel.invalidateLocalDirectories([targetDirectory])
             viewModel.refreshCurrentLocalDirectoryIfNeeded(affectedDirectories: [targetDirectory])
-            viewModel.statusMessage = items.count == 1
-                ? "Đã download \(items[0].name)."
-                : "Đã download \(items.count) items."
+            viewModel.statusMessage = viewModel.localizedSingleOrMany(
+                count: items.count,
+                name: items[0].name,
+                singularKey: "Downloaded %@.",
+                pluralKey: "Downloaded %lld items."
+            )
         }
     }
 
     func createRemoteFolder() {
         guard isConnected else { return }
         guard let folderName = CertificatePrompt.presentTextInputDialog(
-            title: "Tạo thư mục remote",
-            message: "Nhập tên thư mục mới trong \(remoteCurrentPath).",
+            title: "Create Remote Folder".localized,
+            message: "Enter a name for the new folder in %@.".localized(remoteCurrentPath),
             defaultValue: ""
         ) else {
             return
         }
 
         focusedPane = .remote
-        runTask(status: "Đang tạo thư mục \(folderName)...") { viewModel in
+        runTask(status: "Creating folder %@...".localized(folderName)) { viewModel in
             try await viewModel.ftpClient.createDirectory(named: folderName, in: viewModel.remoteCurrentPath)
-            viewModel.statusMessage = "Đã tạo thư mục \(folderName)."
+            viewModel.statusMessage = "Created folder %@.".localized(folderName)
             try await viewModel.refreshRemoteDirectory(path: viewModel.remoteCurrentPath, forceRefresh: true)
         }
     }
@@ -620,16 +716,22 @@ final class SessionViewModel: ObservableObject {
             let items = selectedLocalItems
             let batch = BrowserTransferBatch(items: items.map(transferItem(for:)))
             snapshot = ClipboardSnapshot(sourcePane: .local, batch: batch, copiedAt: Date())
-            statusMessage = items.count == 1
-                ? "Đã copy \(items[0].name)."
-                : "Đã copy \(items.count) items."
+            statusMessage = localizedSingleOrMany(
+                count: items.count,
+                name: items[0].name,
+                singularKey: "Copied %@.",
+                pluralKey: "Copied %lld items."
+            )
         case .remote:
             let items = selectedRemoteItems
             let batch = BrowserTransferBatch(items: items.map(transferItem(for:)))
             snapshot = ClipboardSnapshot(sourcePane: .remote, batch: batch, copiedAt: Date())
-            statusMessage = items.count == 1
-                ? "Đã copy \(items[0].name)."
-                : "Đã copy \(items.count) items."
+            statusMessage = localizedSingleOrMany(
+                count: items.count,
+                name: items[0].name,
+                singularKey: "Copied %@.",
+                pluralKey: "Copied %lld items."
+            )
         }
 
         clipboardSnapshot = snapshot
@@ -656,7 +758,7 @@ final class SessionViewModel: ObservableObject {
         case .local:
             guard let destination = localCurrentURL,
                   let rootURL = localRootURL else { return }
-            runTask(status: "Đang paste local items...") { viewModel in
+            runTask(status: "Pasting local items...".localized) { viewModel in
                 try await viewModel.transferCoordinator.copyLocal(
                     urls: urls,
                     to: destination,
@@ -665,22 +767,28 @@ final class SessionViewModel: ObservableObject {
                 )
                 await viewModel.invalidateLocalDirectories([destination])
                 viewModel.refreshCurrentLocalDirectoryIfNeeded(affectedDirectories: [destination])
-                viewModel.statusMessage = urls.count == 1
-                    ? "Đã paste \(urls[0].lastPathComponent)."
-                    : "Đã paste \(urls.count) items."
+                viewModel.statusMessage = viewModel.localizedSingleOrMany(
+                    count: urls.count,
+                    name: urls[0].lastPathComponent,
+                    singularKey: "Pasted %@.",
+                    pluralKey: "Pasted %lld items."
+                )
             }
         case .remote:
             let destination = remoteCurrentPath
-            runTransferTask(status: "Đang paste lên remote...") { viewModel in
+            runTransferTask(status: "Pasting to remote...".localized) { viewModel in
                 try await viewModel.transferCoordinator.copyLocalToRemote(
                     urls: urls,
                     to: destination,
                     progress: viewModel.progressReporter(),
                     status: viewModel.statusReporter()
                 )
-                viewModel.statusMessage = urls.count == 1
-                    ? "Đã paste \(urls[0].lastPathComponent) lên remote."
-                    : "Đã paste \(urls.count) items lên remote."
+                viewModel.statusMessage = viewModel.localizedSingleOrMany(
+                    count: urls.count,
+                    name: urls[0].lastPathComponent,
+                    singularKey: "Pasted %@ to remote.",
+                    pluralKey: "Pasted %lld items to remote."
+                )
                 try await viewModel.refreshRemoteDirectory(path: viewModel.remoteCurrentPath, forceRefresh: true)
             }
         }
@@ -689,18 +797,18 @@ final class SessionViewModel: ObservableObject {
     func renameSelectedRemoteItem() {
         guard let item = primarySelectedRemoteItem else { return }
         guard let newName = CertificatePrompt.presentTextInputDialog(
-            title: "Đổi tên remote item",
-            message: "Nhập tên mới cho \(item.name).",
+            title: "Rename Remote Item".localized,
+            message: "Enter a new name for %@.".localized(item.name),
             defaultValue: item.name
         ) else {
             return
         }
 
         focusedPane = .remote
-        runTask(status: "Đang đổi tên \(item.name)...") { viewModel in
+        runTask(status: "Renaming %@...".localized(item.name)) { viewModel in
             let destinationPath = FTPPath.join(FTPPath.parent(of: item.path), child: newName)
             try await viewModel.ftpClient.moveItem(at: item.path, to: destinationPath)
-            viewModel.statusMessage = "Đã đổi tên \(item.name) thành \(newName)."
+            viewModel.statusMessage = "Renamed %@ to %@.".localized(item.name, newName)
             try await viewModel.refreshRemoteDirectory(path: viewModel.remoteCurrentPath, forceRefresh: true)
         }
     }
@@ -708,18 +816,18 @@ final class SessionViewModel: ObservableObject {
     func renameSelectedLocalItem() {
         guard let item = primarySelectedLocalItem else { return }
         guard let newName = CertificatePrompt.presentTextInputDialog(
-            title: "Đổi tên local item",
-            message: "Nhập tên mới cho \(item.name).",
+            title: "Rename Local Item".localized,
+            message: "Enter a new name for %@.".localized(item.name),
             defaultValue: item.name
         ) else {
             return
         }
 
         focusedPane = .local
-        runTask(status: "Đang đổi tên \(item.name)...") { viewModel in
+        runTask(status: "Renaming %@...".localized(item.name)) { viewModel in
             let destinationURL = item.url.deletingLastPathComponent().appendingPathComponent(newName, isDirectory: item.isDirectory)
             guard !FileManager.default.fileExists(atPath: destinationURL.path) else {
-                throw BrowserInteractionError.invalidDrop("Đích \(newName) đã tồn tại.")
+                throw BrowserInteractionError.invalidDrop("Destination %@ already exists.".localized(newName))
             }
 
             try FileManager.default.moveItem(at: item.url, to: destinationURL)
@@ -728,7 +836,7 @@ final class SessionViewModel: ObservableObject {
             ]
             await viewModel.invalidateLocalDirectories(affectedDirectories)
             viewModel.refreshCurrentLocalDirectoryIfNeeded(affectedDirectories: affectedDirectories)
-            viewModel.statusMessage = "Đã đổi tên \(item.name) thành \(newName)."
+            viewModel.statusMessage = "Renamed %@ to %@.".localized(item.name, newName)
         }
     }
 
@@ -736,24 +844,27 @@ final class SessionViewModel: ObservableObject {
         let items = selectedRemoteItems
         guard !items.isEmpty else { return }
 
-        let itemDescription = items.count == 1 ? items[0].name : "\(items.count) items đã chọn"
+        let itemDescription = localizedSelectionDescription(count: items.count, name: items[0].name)
         guard CertificatePrompt.presentDeleteDialog(
-            title: "Xóa remote item",
-            message: "Bạn có chắc muốn xóa \(itemDescription)?"
+            title: "Delete Remote Item".localized,
+            message: "Are you sure you want to delete %@?".localized(itemDescription)
         ) else {
             return
         }
 
         focusedPane = .remote
-        runTask(status: "Đang xóa \(itemDescription)...") { viewModel in
+        runTask(status: "Deleting %@...".localized(itemDescription)) { viewModel in
             let orderedItems = items.sorted { $0.path.count > $1.path.count }
             for (index, item) in orderedItems.enumerated() {
-                viewModel.statusMessage = "Deleting \(index + 1)/\(orderedItems.count): \(item.name)"
+                viewModel.statusMessage = "Deleting %lld/%lld: %@".localized(Int64(index + 1), Int64(orderedItems.count), item.name)
                 try await viewModel.ftpClient.deleteItem(at: item.path, isDirectory: item.isDirectory)
             }
-            viewModel.statusMessage = items.count == 1
-                ? "Đã xóa \(items[0].name)."
-                : "Đã xóa \(items.count) items."
+            viewModel.statusMessage = viewModel.localizedSingleOrMany(
+                count: items.count,
+                name: items[0].name,
+                singularKey: "Deleted %@.",
+                pluralKey: "Deleted %lld items."
+            )
             try await viewModel.refreshRemoteDirectory(path: viewModel.remoteCurrentPath, forceRefresh: true)
         }
     }
@@ -762,23 +873,26 @@ final class SessionViewModel: ObservableObject {
         let items = selectedLocalItems
         guard !items.isEmpty else { return }
 
-        let itemDescription = items.count == 1 ? items[0].name : "\(items.count) items đã chọn"
+        let itemDescription = localizedSelectionDescription(count: items.count, name: items[0].name)
         guard CertificatePrompt.presentDeleteDialog(
-            title: "Xóa local item",
-            message: "Bạn có chắc muốn xóa \(itemDescription)?"
+            title: "Delete Local Item".localized,
+            message: "Are you sure you want to delete %@?".localized(itemDescription)
         ) else {
             return
         }
 
         focusedPane = .local
-        runTask(status: "Đang xóa \(itemDescription)...") { viewModel in
+        runTask(status: "Deleting %@...".localized(itemDescription)) { viewModel in
             try await viewModel.transferCoordinator.deleteLocal(items: items, status: viewModel.statusReporter())
             let affectedDirectories = items.map { $0.url.deletingLastPathComponent().standardizedFileURL }
             await viewModel.invalidateLocalDirectories(affectedDirectories)
             viewModel.refreshCurrentLocalDirectoryIfNeeded(affectedDirectories: affectedDirectories)
-            viewModel.statusMessage = items.count == 1
-                ? "Đã xóa \(items[0].name)."
-                : "Đã xóa \(items.count) items."
+            viewModel.statusMessage = viewModel.localizedSingleOrMany(
+                count: items.count,
+                name: items[0].name,
+                singularKey: "Deleted %@.",
+                pluralKey: "Deleted %lld items."
+            )
         }
     }
 
@@ -788,7 +902,7 @@ final class SessionViewModel: ObservableObject {
             await self.ftpClient.cancelCurrentTransfer()
             self.isTransferActive = false
             self.transferProgressModel.clear()
-            self.statusMessage = "Đã hủy transfer hiện tại."
+            self.statusMessage = "Canceled the current transfer.".localized
         }
     }
 
@@ -823,27 +937,27 @@ final class SessionViewModel: ObservableObject {
 
         let sourcePanes = Set(items.map(\.sourcePane))
         guard sourcePanes.count == 1, let sourcePane = sourcePanes.first else {
-            present(BrowserInteractionError.invalidDrop("Không thể xử lý drag payload hỗn hợp."))
+            present(BrowserInteractionError.invalidDrop("Cannot handle a mixed drag payload.".localized))
             return
         }
 
         switch (sourcePane, resolution.pane) {
         case (.local, .remote):
             guard let destination = resolution.destinationRemoteDirectory else { return }
-            runTransferTask(status: "Đang upload từ local sang remote...") { viewModel in
+            runTransferTask(status: "Uploading from local to remote...".localized) { viewModel in
                 try await viewModel.transferCoordinator.upload(
                     urls: items.compactMap(\.localURL),
                     to: destination,
                     progress: viewModel.progressReporter(),
                     status: viewModel.statusReporter()
                 )
-                viewModel.statusMessage = "Đã upload \(items.count) item(s)."
+                viewModel.statusMessage = "Uploaded %lld item(s).".localized(Int64(items.count))
                 try await viewModel.refreshRemoteDirectory(path: viewModel.remoteCurrentPath, forceRefresh: true)
             }
         case (.remote, .local):
             guard let destination = resolution.destinationLocalDirectory else { return }
             let remoteItems = items.compactMap(remoteItem(from:))
-            runTransferTask(status: "Đang download từ remote về local...") { viewModel in
+            runTransferTask(status: "Downloading from remote to local...".localized) { viewModel in
                 try await viewModel.transferCoordinator.download(
                     items: remoteItems,
                     to: destination,
@@ -852,12 +966,12 @@ final class SessionViewModel: ObservableObject {
                 )
                 await viewModel.invalidateLocalDirectories([destination])
                 viewModel.refreshCurrentLocalDirectoryIfNeeded(affectedDirectories: [destination])
-                viewModel.statusMessage = "Đã download \(remoteItems.count) item(s)."
+                viewModel.statusMessage = "Downloaded %lld item(s).".localized(Int64(remoteItems.count))
             }
         case (.local, .local):
             guard let destination = resolution.destinationLocalDirectory,
                   let rootURL = localRootURL else { return }
-            runTask(status: "Đang move local items...") { viewModel in
+            runTask(status: "Moving local items...".localized) { viewModel in
                 try await viewModel.transferCoordinator.moveLocal(
                     urls: items.compactMap(\.localURL),
                     to: destination,
@@ -868,18 +982,18 @@ final class SessionViewModel: ObservableObject {
                 let affectedDirectories = sourceURLs.map { $0.deletingLastPathComponent().standardizedFileURL } + [destination.standardizedFileURL]
                 await viewModel.invalidateLocalDirectories(affectedDirectories)
                 viewModel.refreshCurrentLocalDirectoryIfNeeded(affectedDirectories: affectedDirectories)
-                viewModel.statusMessage = "Đã move \(items.count) local item(s)."
+                viewModel.statusMessage = "Moved %lld local item(s).".localized(Int64(items.count))
             }
         case (.remote, .remote):
             guard let destination = resolution.destinationRemoteDirectory else { return }
             let remoteItems = items.compactMap(remoteItem(from:))
-            runTask(status: "Đang move remote items...") { viewModel in
+            runTask(status: "Moving remote items...".localized) { viewModel in
                 try await viewModel.transferCoordinator.moveRemote(
                     items: remoteItems,
                     to: destination,
                     status: viewModel.statusReporter()
                 )
-                viewModel.statusMessage = "Đã move \(remoteItems.count) remote item(s)."
+                viewModel.statusMessage = "Moved %lld remote item(s).".localized(Int64(remoteItems.count))
                 try await viewModel.refreshRemoteDirectory(path: viewModel.remoteCurrentPath, forceRefresh: true)
             }
         }
@@ -916,7 +1030,7 @@ final class SessionViewModel: ObservableObject {
                     } else if !allItems.isEmpty {
                         self.handleDrop(allItems, resolution: resolution)
                     } else {
-                        self.present(BrowserInteractionError.invalidDrop("Không đọc được payload drag/drop hợp lệ."))
+                        self.present(BrowserInteractionError.invalidDrop("Could not read a valid drag and drop payload.".localized))
                     }
                 }
             } catch {
@@ -936,7 +1050,7 @@ final class SessionViewModel: ObservableObject {
         case .local:
             guard let destination = resolution.destinationLocalDirectory,
                   let rootURL = localRootURL else { return }
-            runTask(status: "Đang import local drag...") { viewModel in
+            runTask(status: "Importing local drag...".localized) { viewModel in
                 try await viewModel.transferCoordinator.moveLocal(
                     urls: urls,
                     to: destination,
@@ -946,18 +1060,18 @@ final class SessionViewModel: ObservableObject {
                 let affectedDirectories = urls.map { $0.deletingLastPathComponent().standardizedFileURL } + [destination.standardizedFileURL]
                 await viewModel.invalidateLocalDirectories(affectedDirectories)
                 viewModel.refreshCurrentLocalDirectoryIfNeeded(affectedDirectories: affectedDirectories)
-                viewModel.statusMessage = "Đã xử lý \(urls.count) local item(s)."
+                viewModel.statusMessage = "Processed %lld local item(s).".localized(Int64(urls.count))
             }
         case .remote:
             guard let destination = resolution.destinationRemoteDirectory, isConnected else { return }
-            runTransferTask(status: "Đang upload từ Finder sang remote...") { viewModel in
+            runTransferTask(status: "Uploading from Finder to remote...".localized) { viewModel in
                 try await viewModel.transferCoordinator.upload(
                     urls: urls,
                     to: destination,
                     progress: viewModel.progressReporter(),
                     status: viewModel.statusReporter()
                 )
-                viewModel.statusMessage = "Đã upload \(urls.count) item(s) từ Finder."
+                viewModel.statusMessage = "Uploaded %lld item(s) from Finder.".localized(Int64(urls.count))
                 try await viewModel.refreshRemoteDirectory(path: viewModel.remoteCurrentPath, forceRefresh: true)
             }
         }
@@ -1090,7 +1204,7 @@ final class SessionViewModel: ObservableObject {
             guard let destination = localCurrentURL,
                   let rootURL = localRootURL else { return }
             let urls = snapshot.localURLs
-            runTask(status: "Đang duplicate local items...") { viewModel in
+            runTask(status: "Duplicating local items...".localized) { viewModel in
                 try await viewModel.transferCoordinator.copyLocal(
                     urls: urls,
                     to: destination,
@@ -1099,29 +1213,35 @@ final class SessionViewModel: ObservableObject {
                 )
                 await viewModel.invalidateLocalDirectories([destination])
                 viewModel.refreshCurrentLocalDirectoryIfNeeded(affectedDirectories: [destination])
-                viewModel.statusMessage = urls.count == 1
-                    ? "Đã duplicate \(urls[0].lastPathComponent)."
-                    : "Đã duplicate \(urls.count) items."
+                viewModel.statusMessage = viewModel.localizedSingleOrMany(
+                    count: urls.count,
+                    name: urls[0].lastPathComponent,
+                    singularKey: "Duplicated %@.",
+                    pluralKey: "Duplicated %lld items."
+                )
             }
         case (.local, .remote):
             let urls = snapshot.localURLs
             let destination = remoteCurrentPath
-            runTransferTask(status: "Đang paste local items lên remote...") { viewModel in
+            runTransferTask(status: "Pasting local items to remote...".localized) { viewModel in
                 try await viewModel.transferCoordinator.copyLocalToRemote(
                     urls: urls,
                     to: destination,
                     progress: viewModel.progressReporter(),
                     status: viewModel.statusReporter()
                 )
-                viewModel.statusMessage = urls.count == 1
-                    ? "Đã paste \(urls[0].lastPathComponent) lên remote."
-                    : "Đã paste \(urls.count) items lên remote."
+                viewModel.statusMessage = viewModel.localizedSingleOrMany(
+                    count: urls.count,
+                    name: urls[0].lastPathComponent,
+                    singularKey: "Pasted %@ to remote.",
+                    pluralKey: "Pasted %lld items to remote."
+                )
                 try await viewModel.refreshRemoteDirectory(path: viewModel.remoteCurrentPath, forceRefresh: true)
             }
         case (.remote, .local):
             guard let destination = localCurrentURL else { return }
             let remoteItems = snapshot.remoteItems
-            runTransferTask(status: "Đang paste remote items về local...") { viewModel in
+            runTransferTask(status: "Pasting remote items to local...".localized) { viewModel in
                 try await viewModel.transferCoordinator.copyRemoteToLocal(
                     items: remoteItems,
                     to: destination,
@@ -1130,23 +1250,29 @@ final class SessionViewModel: ObservableObject {
                 )
                 await viewModel.invalidateLocalDirectories([destination])
                 viewModel.refreshCurrentLocalDirectoryIfNeeded(affectedDirectories: [destination])
-                viewModel.statusMessage = remoteItems.count == 1
-                    ? "Đã paste \(remoteItems[0].name) về local."
-                    : "Đã paste \(remoteItems.count) remote items về local."
+                viewModel.statusMessage = viewModel.localizedSingleOrMany(
+                    count: remoteItems.count,
+                    name: remoteItems[0].name,
+                    singularKey: "Pasted %@ to local.",
+                    pluralKey: "Pasted %lld remote items to local."
+                )
             }
         case (.remote, .remote):
             let remoteItems = snapshot.remoteItems
             let destination = remoteCurrentPath
-            runTransferTask(status: "Đang copy remote items qua temp...") { viewModel in
+            runTransferTask(status: "Copying remote items via temp...".localized) { viewModel in
                 try await viewModel.transferCoordinator.copyRemote(
                     items: remoteItems,
                     to: destination,
                     progress: viewModel.progressReporter(),
                     status: viewModel.statusReporter()
                 )
-                viewModel.statusMessage = remoteItems.count == 1
-                    ? "Đã paste \(remoteItems[0].name) trên remote."
-                    : "Đã paste \(remoteItems.count) remote items."
+                viewModel.statusMessage = viewModel.localizedSingleOrMany(
+                    count: remoteItems.count,
+                    name: remoteItems[0].name,
+                    singularKey: "Pasted %@ on remote.",
+                    pluralKey: "Pasted %lld remote items."
+                )
                 try await viewModel.refreshRemoteDirectory(path: viewModel.remoteCurrentPath, forceRefresh: true)
             }
         }
@@ -1162,27 +1288,62 @@ final class SessionViewModel: ObservableObject {
         applyRemoteSnapshot(snapshot, diff: diff, isSameDirectory: isSameDirectory)
     }
 
-    private func restoreLocalRootIfPossible() {
+    private func restoreLocalRootForCurrentProfile() {
+        guard let profile = activeLocalRootProfile else {
+            clearLocalRoot()
+            return
+        }
+
         do {
-            guard let resolution = try bookmarkStore.resolveRootBookmark() else { return }
-            try activateLocalRoot(resolution.url, persistBookmark: resolution.isStale)
+            guard let resolution = try bookmarkStore.resolveRootBookmark(for: profile.id) else {
+                clearLocalRoot()
+                return
+            }
+            try activateLocalRoot(resolution.url, persistBookmark: resolution.isStale, for: profile.id)
         } catch {
+            clearLocalRoot()
             present(error)
         }
     }
 
-    private func activateLocalRoot(_ url: URL, persistBookmark: Bool) throws {
+    private func activateLocalRoot(_ url: URL, persistBookmark: Bool, for profileID: UUID) throws {
         activeRootAccessURL?.stopAccessingSecurityScopedResource()
         _ = url.startAccessingSecurityScopedResource()
         activeRootAccessURL = url
 
         if persistBookmark {
-            try bookmarkStore.saveRootBookmark(for: url)
+            try bookmarkStore.saveRootBookmark(for: url, profileID: profileID)
         }
 
         localRootURL = url
         focusedPane = .local
         requestLocalDirectoryLoad(url, forceRefresh: true)
+    }
+
+    private func clearLocalRoot() {
+        activeRootAccessURL?.stopAccessingSecurityScopedResource()
+        activeRootAccessURL = nil
+        localRootURL = nil
+        localCurrentURL = nil
+        localItems = []
+        localRows = []
+        localSnapshot = nil
+        selectedLocalItemIDs = []
+        localSelectionAnchorID = nil
+        updateLocalWatcher(for: nil)
+    }
+
+    private func updateLocalRootPath(_ path: String?, for profileID: UUID) throws {
+        guard let existingProfile = profiles.first(where: { $0.id == profileID }) else {
+            return
+        }
+        guard existingProfile.localRootPath != path else {
+            return
+        }
+
+        var updatedProfile = existingProfile
+        updatedProfile.localRootPath = path
+        profiles = try connectionStore.saveMetadata(profile: updatedProfile)
     }
 
     private func requestLocalDirectoryLoad(_ url: URL, forceRefresh: Bool = false) {
@@ -1349,6 +1510,10 @@ final class SessionViewModel: ObservableObject {
             do {
                 try await operation(self)
             } catch {
+                if case FTPError.ftpsDataSessionResumptionRequired = error {
+                    await ftpClient.disconnect()
+                    resetRemoteSessionState()
+                }
                 if isConnected, connectedProfileID == nil {
                     isConnected = false
                 }
@@ -1392,6 +1557,18 @@ final class SessionViewModel: ObservableObject {
         let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         errorMessage = message
         statusMessage = message
+    }
+
+    private func resetRemoteSessionState() {
+        connectedProfileID = nil
+        isConnected = false
+        remoteItems = []
+        remoteRows = []
+        remoteSnapshot = nil
+        remoteCurrentPath = "/"
+        selectedRemoteItemIDs = []
+        isTransferActive = false
+        transferProgressModel.clear()
     }
 
     private func isInsideRoot(_ candidate: URL, root: URL) -> Bool {
@@ -1470,6 +1647,57 @@ final class SessionViewModel: ObservableObject {
         }
     }
 
+    private func localizedStatusMessageForCurrentState() -> String {
+        guard let profile = connectedProfile else {
+            return "Not connected.".localized
+        }
+        return localizedConnectedStatusMessage(for: profile)
+    }
+
+    private func localizedConnectedStatusMessage(for profile: ConnectionProfile) -> String {
+        if profile.protocolMode == .ftp {
+            return L10n.format("Connected to %@ via insecure FTP.", profile.host)
+        }
+        return L10n.format("Connected to %@.", profile.host)
+    }
+
+    private func localizedSelectionDescription(count: Int, name: String) -> String {
+        count == 1 ? name : "%lld selected items".localized(Int64(count))
+    }
+
+    private func localizedSingleOrMany(count: Int, name: String, singularKey: String, pluralKey: String) -> String {
+        count == 1 ? singularKey.localized(name) : pluralKey.localized(Int64(count))
+    }
+
+    private func syncSavedSitesIfNeeded() async {
+        let localSnapshot = connectionStore.loadSnapshot(forceRefresh: true)
+
+        do {
+            let resolution = try await appleSyncController.syncIfNeeded(localSnapshot: localSnapshot)
+            guard case .applyRemote(let remoteSnapshot) = resolution else {
+                return
+            }
+
+            let previousSelectedProfileID = selectedProfileID
+            let syncedProfiles = try connectionStore.replaceAll(
+                profiles: remoteSnapshot.profiles,
+                updatedAt: remoteSnapshot.updatedAt
+            )
+            profiles = syncedProfiles
+
+            if let previousSelectedProfileID,
+               syncedProfiles.contains(where: { $0.id == previousSelectedProfileID }) {
+                selectedProfileID = previousSelectedProfileID
+            } else {
+                selectedProfileID = syncedProfiles.first?.id
+            }
+
+            restoreLocalRootForCurrentProfile()
+        } catch {
+            present(error)
+        }
+    }
+
     private static func uniqueStandardizedURLs(_ urls: [URL]) -> [URL] {
         var seen = Set<String>()
         var result: [URL] = []
@@ -1489,33 +1717,36 @@ enum CertificatePrompt {
     @MainActor
     static func presentTrustDialog(host: String, reason: String) -> Bool {
         let alert = NSAlert()
-        alert.messageText = "Chứng chỉ FTPS chưa được tin cậy"
-        alert.informativeText = "Máy chủ \(host) trả về chứng chỉ không hợp lệ hoặc tự ký.\n\n\(reason)\n\nBạn có muốn tin cậy chứng chỉ này cho phiên hiện tại không?"
+        alert.icon = AppIconProvider.image()
+        alert.messageText = "Untrusted FTPS Certificate".localized
+        alert.informativeText = "The server %@ returned an invalid or self-signed certificate.\n\n%@\n\nDo you want to trust this certificate for the current session?".localized(host, reason)
         alert.alertStyle = .warning
-        alert.addButton(withTitle: "Trust Once")
-        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Trust Once".localized)
+        alert.addButton(withTitle: "Cancel".localized)
         return alert.runModal() == .alertFirstButtonReturn
     }
 
     @MainActor
     static func presentDeleteDialog(title: String, message: String) -> Bool {
         let alert = NSAlert()
+        alert.icon = AppIconProvider.image()
         alert.messageText = title
         alert.informativeText = message
         alert.alertStyle = .warning
-        alert.addButton(withTitle: "Delete")
-        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Delete".localized)
+        alert.addButton(withTitle: "Cancel".localized)
         return alert.runModal() == .alertFirstButtonReturn
     }
 
     @MainActor
     static func presentTextInputDialog(title: String, message: String, defaultValue: String) -> String? {
         let alert = NSAlert()
+        alert.icon = AppIconProvider.image()
         alert.messageText = title
         alert.informativeText = message
         alert.alertStyle = .informational
-        alert.addButton(withTitle: "OK")
-        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "OK".localized)
+        alert.addButton(withTitle: "Cancel".localized)
 
         let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 280, height: 24))
         input.stringValue = defaultValue
