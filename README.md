@@ -67,6 +67,49 @@ SwiftPM validation tests:
 swift test
 ```
 
+## Automated GitHub Releases
+
+This repo includes a GitHub Actions workflow at `.github/workflows/release-macos.yml`.
+
+- Push a tag such as `v1.0.1` to build a release automatically
+- The workflow runs validation tests, archives the app, signs it with `Developer ID Application`, notarizes it with Apple, then packages:
+  - a notarized `.dmg` with an `Applications` shortcut for drag-and-drop install
+  - a `.zip` containing the stapled `.app`
+  - `checksums.txt` with SHA-256 hashes
+- The workflow uploads the artifacts and publishes a GitHub Release for the tag
+- You can also run the workflow manually with `workflow_dispatch` to validate the packaging steps
+
+Example:
+
+```bash
+git tag v1.0.1
+git push origin v1.0.1
+```
+
+Required GitHub repository secrets:
+
+- `APPLE_TEAM_ID`
+- `APPLE_DEVELOPER_ID_CERTIFICATE_P12_BASE64`
+- `APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD`
+- `APPLE_DEVELOPER_ID_PROVISIONING_PROFILE_BASE64`
+- `APPLE_API_KEY_ID`
+- `APPLE_API_ISSUER_ID`
+- `APPLE_API_PRIVATE_KEY`
+
+Recommended setup notes:
+
+- `APPLE_DEVELOPER_ID_CERTIFICATE_P12_BASE64` should be the base64-encoded `.p12` for your `Developer ID Application` certificate
+- `APPLE_DEVELOPER_ID_PROVISIONING_PROFILE_BASE64` should be the base64-encoded Developer ID provisioning profile for `vn.xconnect.XConnectFTP`
+- `APPLE_API_PRIVATE_KEY` should contain the raw contents of your App Store Connect API `.p8` key
+- The script exports CloudKit with `Production` environment for signed releases
+
+Example commands to prepare base64 secrets on macOS:
+
+```bash
+base64 -i DeveloperIDApplication.p12 | pbcopy
+base64 -i XConnectFTP_DeveloperID.provisionprofile | pbcopy
+```
+
 ## Project Structure
 
 - `XConnectFTP/`

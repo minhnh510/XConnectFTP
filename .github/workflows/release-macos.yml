@@ -1,0 +1,98 @@
+name: Release macOS App
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release:
+    name: Build Signed Release Artifacts
+    runs-on: macos-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Select default Xcode
+        run: sudo xcode-select -s /Applications/Xcode.app
+
+      - name: Run validation tests
+        run: swift test
+
+      - name: Validate signing secrets
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_DEVELOPER_ID_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_DEVELOPER_ID_CERTIFICATE_P12_BASE64 }}
+          APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD }}
+          APPLE_DEVELOPER_ID_PROVISIONING_PROFILE_BASE64: ${{ secrets.APPLE_DEVELOPER_ID_PROVISIONING_PROFILE_BASE64 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+        run: |
+          required=(
+            APPLE_TEAM_ID
+            APPLE_DEVELOPER_ID_CERTIFICATE_P12_BASE64
+            APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD
+            APPLE_DEVELOPER_ID_PROVISIONING_PROFILE_BASE64
+            APPLE_API_KEY_ID
+            APPLE_API_ISSUER_ID
+            APPLE_API_PRIVATE_KEY
+          )
+          missing=0
+          for secret_name in "${required[@]}"; do
+            if [[ -z "${!secret_name}" ]]; then
+              echo "::error::Missing GitHub secret: ${secret_name}"
+              missing=1
+            fi
+          done
+          if [[ "$missing" -ne 0 ]]; then
+            exit 1
+          fi
+
+      - name: Build, sign, notarize, and package app
+        id: package
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_DEVELOPER_ID_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_DEVELOPER_ID_CERTIFICATE_P12_BASE64 }}
+          APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD }}
+          APPLE_DEVELOPER_ID_PROVISIONING_PROFILE_BASE64: ${{ secrets.APPLE_DEVELOPER_ID_PROVISIONING_PROFILE_BASE64 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+        run: ./scripts/export-notarized-release-artifacts.sh
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: XConnectFTP-release-${{ github.run_number }}
+          path: |
+            release/*.zip
+            release/*.dmg
+            release/checksums.txt
+          if-no-files-found: error
+
+      - name: Publish GitHub release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release/*.zip
+            release/*.dmg
+            release/checksums.txt
+          generate_release_notes: true
+          body: |
+            Signed and notarized macOS release artifacts for XConnectFTP.
+
+            Included files:
+            - notarized `.dmg` for drag-and-drop installation
+            - `.zip` containing the stapled `.app`
+            - `checksums.txt` with SHA-256 hashes

@@ -1,7 +1,10 @@
 .DS_Store
 .build/
+build/
 DerivedData/
 .derivedData/
+.derivedData-release/
 .cache/
+release/
 xcuserdata/
 *.xcuserstate
