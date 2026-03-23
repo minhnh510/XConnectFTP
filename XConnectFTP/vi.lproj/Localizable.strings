@@ -55,7 +55,11 @@
 "Cancel" = "Hủy";
 "Save" = "Lưu";
 "Language" = "Ngôn ngữ";
+"Interface" = "Giao diện";
 "General" = "Chung";
+"Use System Appearance" = "Dùng giao diện hệ thống";
+"Light" = "Sáng";
+"Dark" = "Tối";
 "Use System Language" = "Dùng ngôn ngữ hệ thống";
 "English" = "Tiếng Anh";
 "Vietnamese" = "Tiếng Việt";

@@ -79,6 +79,33 @@ struct AppLanguagePicker: View {
     }
 }
 
+struct AppAppearancePicker: View {
+    @AppStorage(AppAppearance.storageKey) private var selectedAppearanceRawValue = AppAppearance.system.rawValue
+    var showsLabel: Bool = true
+
+    private var selection: Binding<AppAppearance> {
+        Binding(
+            get: { AppAppearance(rawValue: selectedAppearanceRawValue) ?? .system },
+            set: { selectedAppearanceRawValue = $0.rawValue }
+        )
+    }
+
+    var body: some View {
+        Picker(selection: selection) {
+            ForEach(AppAppearance.allCases) { appearance in
+                Text(appearance.displayName).tag(appearance)
+            }
+        } label: {
+            if showsLabel {
+                Label("Interface".localized, systemImage: "circle.lefthalf.filled")
+            } else {
+                EmptyView()
+            }
+        }
+        .pickerStyle(.menu)
+    }
+}
+
 struct SettingsView: View {
     @AppStorage(AppLanguage.storageKey) private var selectedLanguageRawValue = AppLanguage.system.rawValue
     @EnvironmentObject private var appleSyncController: AppleSyncController
@@ -91,6 +118,7 @@ struct SettingsView: View {
     var body: some View {
         Form {
             Section("General".localized) {
+                AppAppearancePicker()
                 AppLanguagePicker()
             }
 

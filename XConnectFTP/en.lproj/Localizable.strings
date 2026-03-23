@@ -55,7 +55,11 @@
 "Cancel" = "Cancel";
 "Save" = "Save";
 "Language" = "Language";
+"Interface" = "Interface";
 "General" = "General";
+"Use System Appearance" = "Use System Appearance";
+"Light" = "Light";
+"Dark" = "Dark";
 "Use System Language" = "Use System Language";
 "English" = "English";
 "Vietnamese" = "Vietnamese";
