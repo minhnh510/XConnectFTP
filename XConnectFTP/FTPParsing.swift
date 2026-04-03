@@ -51,32 +51,58 @@ struct PassiveEndpoint {
     }
 }
 
+enum FTPHost {
+    static func connectionHost(for rawHost: String) -> String {
+        let trimmed = rawHost.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count > 2,
+              trimmed.hasPrefix("["),
+              trimmed.hasSuffix("]") else {
+            return trimmed
+        }
+
+        return String(trimmed.dropFirst().dropLast())
+    }
+
+    static func prefersExtendedPassive(for rawHost: String) -> Bool {
+        connectionHost(for: rawHost).contains(":")
+    }
+}
+
 enum FTPError: LocalizedError {
     case notConnected
+    case connectionClosed
     case invalidReply(String)
     case unexpectedReply(Int, String)
     case passiveModeUnavailable
+    case networkTimeout
     case ftpsDataSessionResumptionRequired
     case localFilesystem(String)
     case trustRejected
+    case automaticReconnectFailed(String)
     case operationCancelled
 
     var errorDescription: String? {
         switch self {
         case .notConnected:
             return "No FTP/FTPS connection is currently active.".localized
+        case .connectionClosed:
+            return "The FTP connection was closed by the server.".localized
         case .invalidReply(let reply):
             return "The server returned an invalid reply: %@".localized(reply)
         case .unexpectedReply(let code, let message):
             return "The server returned code %d: %@".localized(code, message)
         case .passiveModeUnavailable:
             return "The server did not provide a passive mode endpoint.".localized
+        case .networkTimeout:
+            return "The FTP operation timed out while waiting for the server.".localized
         case .ftpsDataSessionResumptionRequired:
             return "The FTPS server requires TLS session reuse for data connections when using PROT P. The current version of XConnectFTP does not support this FTPS mode. Disable TLS session resumption on the server or use a different protocol or server.".localized
         case .localFilesystem(let message):
             return message
         case .trustRejected:
             return "The FTPS connection was canceled because the certificate was not accepted.".localized
+        case .automaticReconnectFailed(let reason):
+            return "The FTP connection was interrupted and XConnectFTP could not reconnect automatically: %@".localized(reason)
         case .operationCancelled:
             return "The operation was canceled.".localized
         }

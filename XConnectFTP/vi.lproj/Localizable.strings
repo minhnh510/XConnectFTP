@@ -67,7 +67,9 @@
 "Name" = "Tên";
 "Size" = "Kích thước";
 "Modified" = "Chỉnh sửa";
+"Search" = "Tìm kiếm";
 "Open" = "Mở";
+"Open in Finder" = "Mở trong Finder";
 "Copy" = "Sao chép";
 "Paste" = "Dán";
 "New Site" = "Tạo site";
@@ -110,9 +112,12 @@
 "The server returned an invalid reply: %@" = "Máy chủ trả về phản hồi không hợp lệ: %@";
 "The server returned code %d: %@" = "Máy chủ trả về mã %1$d: %2$@";
 "The server did not provide a passive mode endpoint." = "Máy chủ không cung cấp endpoint cho passive mode.";
+"The FTP connection was closed by the server." = "Kết nối FTP đã bị máy chủ đóng.";
+"The FTP connection was interrupted and XConnectFTP could not reconnect automatically: %@" = "Kết nối FTP đã bị gián đoạn và XConnectFTP không thể tự kết nối lại: %@";
 "The FTPS server requires TLS session reuse for data connections when using PROT P. The current version of XConnectFTP does not support this FTPS mode. Disable TLS session resumption on the server or use a different protocol or server." = "Máy chủ FTPS yêu cầu tái sử dụng phiên TLS cho kết nối dữ liệu khi dùng PROT P. Phiên bản hiện tại của XConnectFTP chưa hỗ trợ kiểu FTPS này. Hãy tắt yêu cầu TLS session resumption trên máy chủ hoặc dùng giao thức hay máy chủ khác.";
 "The FTPS connection was canceled because the certificate was not accepted." = "Kết nối FTPS đã bị hủy vì chứng chỉ không được chấp nhận.";
 "The operation was canceled." = "Tác vụ đã bị hủy.";
+"The FTP operation timed out while waiting for the server." = "Tác vụ FTP đã hết thời gian chờ khi đợi phản hồi từ máy chủ.";
 "Transfer verification failed: file size mismatch (%lld != %lld)." = "Xác minh truyền tải thất bại: kích thước tệp không khớp (%1$lld != %2$lld).";
 "Transfer verification failed: %@ checksum does not match." = "Xác minh truyền tải thất bại: checksum %1$@ không khớp.";
 "Could not read the local file to verify the transfer." = "Không thể đọc tệp local để xác minh truyền tải.";
@@ -196,6 +201,8 @@
 "Processed %lld local item(s)." = "Đã xử lý %lld mục local.";
 "Uploading from Finder to remote..." = "Đang upload từ Finder sang remote...";
 "Uploaded %lld item(s) from Finder." = "Đã upload %lld mục từ Finder.";
+"Opened %@ in Finder." = "Đã mở %@ trong Finder.";
+"Opened %lld items in Finder." = "Đã mở %lld mục trong Finder.";
 "Duplicating local items..." = "Đang tạo bản sao các mục local...";
 "Duplicated %@." = "Đã tạo bản sao %@.";
 "Duplicated %lld items." = "Đã tạo bản sao %lld mục.";

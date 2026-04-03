@@ -79,7 +79,7 @@ struct SiteEditorView: View {
         .environment(\.locale, selectedLanguageLocale)
         .padding(20)
         .frame(width: 460)
-        .onChange(of: draft.protocolMode) { _, newMode in
+        .onChange(of: draft.protocolMode) { newMode in
             if draft.portText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 draft.portText = String(newMode.defaultPort)
             }

@@ -31,6 +31,44 @@ final class PerformanceServicesTests: XCTestCase {
         XCTAssertTrue(diff.unchangedIDs.isEmpty)
     }
 
+    func testBrowserSearchMatcherMatchesCaseAndDiacriticInsensitiveQueries() {
+        XCTAssertTrue(BrowserSearchMatcher.matches("Bao Cao.txt", query: "báo cáo"))
+        XCTAssertTrue(BrowserSearchMatcher.matches("notes.txt", query: "  "))
+        XCTAssertFalse(BrowserSearchMatcher.matches("archive.zip", query: "report"))
+    }
+
+    func testBrowserRowComparatorSortsNameDescendingWhileKeepingDirectoriesFirst() {
+        let rows = [
+            LocalItem(url: URL(fileURLWithPath: "/tmp/docs"), name: "Docs", isDirectory: true, size: nil, modifiedAt: nil),
+            LocalItem(url: URL(fileURLWithPath: "/tmp/alpha.txt"), name: "alpha.txt", isDirectory: false, size: 10, modifiedAt: nil),
+            LocalItem(url: URL(fileURLWithPath: "/tmp/zeta.txt"), name: "zeta.txt", isDirectory: false, size: 20, modifiedAt: nil)
+        ].map(LocalBrowserRowModel.init)
+
+        let comparator = BrowserRowComparator<LocalBrowserRowModel>(.name, order: .reverse)
+        let sortedRows = rows.sorted { comparator.compare($0, $1) == .orderedAscending }
+
+        XCTAssertEqual(sortedRows.map(\.name), ["Docs", "zeta.txt", "alpha.txt"])
+    }
+
+    func testBrowserRowComparatorSortsSizeAndModifiedWithUnknownValuesLast() {
+        let now = Date(timeIntervalSince1970: 2_000)
+        let earlier = Date(timeIntervalSince1970: 1_000)
+        let rows = [
+            RemoteItem(path: "/remote/folder", name: "folder", kind: .directory, size: nil, modifiedAt: nil),
+            RemoteItem(path: "/remote/large.txt", name: "large.txt", kind: .file, size: 50, modifiedAt: earlier),
+            RemoteItem(path: "/remote/small.txt", name: "small.txt", kind: .file, size: 10, modifiedAt: now),
+            RemoteItem(path: "/remote/unknown.txt", name: "unknown.txt", kind: .file, size: nil, modifiedAt: nil)
+        ].map(RemoteBrowserRowModel.init)
+
+        let sizeComparator = BrowserRowComparator<RemoteBrowserRowModel>(.size, order: .reverse)
+        let sizeSortedRows = rows.sorted { sizeComparator.compare($0, $1) == .orderedAscending }
+        XCTAssertEqual(sizeSortedRows.map(\.name), ["folder", "large.txt", "small.txt", "unknown.txt"])
+
+        let modifiedComparator = BrowserRowComparator<RemoteBrowserRowModel>(.modified, order: .reverse)
+        let modifiedSortedRows = rows.sorted { modifiedComparator.compare($0, $1) == .orderedAscending }
+        XCTAssertEqual(modifiedSortedRows.map(\.name), ["folder", "small.txt", "large.txt", "unknown.txt"])
+    }
+
     func testFTPCapabilityCacheUpdatesMutatesAndResets() async {
         let cache = FTPCapabilityCache()
         let initialCapabilities = await cache.capabilities()

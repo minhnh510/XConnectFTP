@@ -10,7 +10,6 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct ContentView: View {
-    @Environment(\.openSettings) private var openSettings
     @AppStorage(AppLanguage.storageKey) private var selectedLanguageRawValue = AppLanguage.system.rawValue
     @ObservedObject private var appleSyncController: AppleSyncController
     @StateObject private var viewModel: SessionViewModel
@@ -63,7 +62,10 @@ struct ContentView: View {
             viewModel.selectAllInFocusedPane()
         }
         .onCommand(#selector(NSResponder.insertNewline(_:))) {
-            viewModel.openPrimarySelection()
+            viewModel.handleReturnKey()
+        }
+        .onCommand(#selector(NSResponder.cancelOperation(_:))) {
+            viewModel.cancelInlineRename()
         }
         .onCommand(#selector(NSText.copy(_:))) {
             viewModel.copyFocusedSelection()
@@ -71,14 +73,27 @@ struct ContentView: View {
         .onCommand(#selector(NSText.paste(_:))) {
             viewModel.pasteIntoFocusedPane()
         }
+        .background(
+            BrowserWindowKeyFallback(
+                isInlineRenaming: viewModel.isInlineRenaming,
+                canHandleReturn: viewModel.canHandleRenameReturnKey,
+                canHandleEscape: viewModel.isInlineRenaming,
+                onReturn: viewModel.handleReturnKey,
+                onEscape: viewModel.cancelInlineRename
+            )
+        )
+        .focusedSceneValue(\.browserCommandActions, BrowserCommandActions(
+            handleReturn: viewModel.handleReturnKey,
+            canHandleReturn: viewModel.canHandleRenameReturnKey
+        ))
         .environment(\.locale, selectedLanguageLocale)
-        .onChange(of: selectedLanguageRawValue) { _, _ in
+        .onChange(of: selectedLanguageRawValue) { _ in
             viewModel.handleLanguageChange()
         }
-        .onChange(of: viewModel.selectedProfileID) { _, _ in
+        .onChange(of: viewModel.selectedProfileID) { _ in
             viewModel.handleSelectedProfileChange()
         }
-        .onChange(of: appleSyncController.syncGeneration) { _, _ in
+        .onChange(of: appleSyncController.syncGeneration) { _ in
             Task {
                 await viewModel.handleAppleSyncConfigurationChange()
             }
@@ -106,41 +121,44 @@ struct ContentView: View {
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
 
-            List(viewModel.profiles, selection: $viewModel.selectedProfileID) { profile in
-                SavedSiteRow(
-                    profile: profile,
-                    isConnected: viewModel.isProfileConnected(profile),
-                    onConnect: { viewModel.connect(to: profile) },
-                    onDisconnect: { viewModel.disconnect(profile: profile) },
-                    onEdit: { viewModel.openEditSiteEditor(for: profile) },
-                    onDelete: { viewModel.deleteProfile(profile) }
-                )
-                .tag(profile.id)
-                .contextMenu {
-                    Button("Connect".localized) {
-                        viewModel.connect(to: profile)
-                    }
-                    .disabled(!viewModel.canConnect(profile: profile))
+            List(selection: $viewModel.selectedProfileID) {
+                ForEach(viewModel.profiles) { profile in
+                    SavedSiteRow(
+                        profile: profile,
+                        isConnected: viewModel.isProfileConnected(profile),
+                        onEdit: { viewModel.openEditSiteEditor(for: profile) },
+                        onDelete: { viewModel.deleteProfile(profile) }
+                    )
+                    .tag(profile.id)
+                    .contextMenu {
+                        Button("Connect".localized) {
+                            viewModel.connect(to: profile)
+                        }
+                        .disabled(!viewModel.canConnect(profile: profile))
 
-                    Button("Disconnect".localized) {
-                        viewModel.disconnect(profile: profile)
-                    }
-                    .disabled(!viewModel.canDisconnect(profile: profile))
+                        Button("Disconnect".localized) {
+                            viewModel.disconnect(profile: profile)
+                        }
+                        .disabled(!viewModel.canDisconnect(profile: profile))
 
-                    Divider()
+                        Divider()
 
-                    Button("Edit".localized) {
-                        viewModel.openEditSiteEditor(for: profile)
-                    }
+                        Button("Edit".localized) {
+                            viewModel.openEditSiteEditor(for: profile)
+                        }
 
-                    Button("Delete".localized, role: .destructive) {
-                        viewModel.deleteProfile(profile)
+                        Button("Delete".localized, role: .destructive) {
+                            viewModel.deleteProfile(profile)
+                        }
                     }
-                }
-                .onTapGesture(count: 2) {
-                    viewModel.connect(to: profile)
                 }
             }
+            .listStyle(.sidebar)
+            .background(
+                ListDoubleClickBridge {
+                    viewModel.connect()
+                }
+            )
         }
         .padding()
         .navigationSplitViewColumnWidth(min: 260, ideal: 300)
@@ -188,13 +206,7 @@ struct ContentView: View {
                 Spacer()
 
                 HStack {
-                    Button {
-                        openSettings()
-                    } label: {
-                        Image(systemName: "gearshape")
-                            .imageScale(.medium)
-                    }
-                    .help("Settings".localized)
+                    SettingsToolbarButton()
 
                     Button("Choose Local Root".localized) {
                         viewModel.chooseLocalRoot()
@@ -283,6 +295,7 @@ struct ContentView: View {
             if let currentURL = viewModel.localCurrentURL {
                 paneHeader(
                     path: currentURL.path,
+                    searchText: $viewModel.localSearchText,
                     onUp: viewModel.goToLocalParent,
                     canGoUp: viewModel.localRootURL != nil && currentURL != viewModel.localRootURL
                 )
@@ -297,14 +310,23 @@ struct ContentView: View {
                     .padding(.horizontal, 8)
                     .padding(.bottom, 8)
             } else {
-                ContentUnavailableView(
-                    "Chưa có thư mục local".localized,
+                PaneUnavailableView(
+                    title: "Chưa có thư mục local".localized,
                     systemImage: "folder.badge.questionmark",
-                    description: Text(viewModel.localPaneEmptyDescription)
+                    description: viewModel.localPaneEmptyDescription
                 )
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
+        .background(
+            BrowserPaneKeyHandler(
+                isActive: viewModel.focusedPane == .local,
+                isInlineRenaming: viewModel.isInlineRenaming,
+                canHandleReturn: viewModel.canHandleRenameReturnKey,
+                canHandleEscape: viewModel.isInlineRenaming,
+                onReturn: viewModel.handleReturnKey,
+                onEscape: viewModel.cancelInlineRename
+            )
+        )
         .onTapGesture {
             viewModel.setFocusedPane(.local)
         }
@@ -320,6 +342,7 @@ struct ContentView: View {
             if viewModel.isConnected {
                 paneHeader(
                     path: viewModel.remoteCurrentPath,
+                    searchText: $viewModel.remoteSearchText,
                     onUp: viewModel.goToRemoteParent,
                     canGoUp: viewModel.remoteCurrentPath != "/"
                 )
@@ -333,32 +356,50 @@ struct ContentView: View {
                     .padding(.horizontal, 8)
                     .padding(.bottom, 8)
             } else {
-                ContentUnavailableView(
-                    "Chưa kết nối remote".localized,
+                PaneUnavailableView(
+                    title: "Chưa kết nối remote".localized,
                     systemImage: "network.slash",
-                    description: Text("Kết nối tới một site FTP hoặc FTPS để duyệt file remote.".localized)
+                    description: "Kết nối tới một site FTP hoặc FTPS để duyệt file remote.".localized
                 )
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
+        .background(
+            BrowserPaneKeyHandler(
+                isActive: viewModel.focusedPane == .remote,
+                isInlineRenaming: viewModel.isInlineRenaming,
+                canHandleReturn: viewModel.canHandleRenameReturnKey,
+                canHandleEscape: viewModel.isInlineRenaming,
+                onReturn: viewModel.handleReturnKey,
+                onEscape: viewModel.cancelInlineRename
+            )
+        )
         .onTapGesture {
             viewModel.setFocusedPane(.remote)
         }
     }
 
-    private func paneHeader(path: String, onUp: @escaping () -> Void, canGoUp: Bool) -> some View {
-        HStack {
-            Text(path)
-                .font(.headline)
-                .lineLimit(1)
-                .truncationMode(.middle)
-            Spacer()
-            Button {
-                onUp()
-            } label: {
-                Image(systemName: "arrow.up")
+    private func paneHeader(
+        path: String,
+        searchText: Binding<String>,
+        onUp: @escaping () -> Void,
+        canGoUp: Bool
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text(path)
+                    .font(.headline)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer()
+                Button {
+                    onUp()
+                } label: {
+                    Image(systemName: "arrow.up")
+                }
+                .disabled(!canGoUp || viewModel.isBusy)
             }
-            .disabled(!canGoUp || viewModel.isBusy)
+
+            BrowserPaneSearchField(text: searchText)
         }
         .padding(.horizontal, 12)
         .padding(.top, 12)
@@ -371,6 +412,37 @@ struct ContentView: View {
             statusMessage: viewModel.statusMessage,
             progressModel: viewModel.transferProgressModel
         )
+    }
+}
+
+private struct SettingsToolbarButton: View {
+    var body: some View {
+        if #available(macOS 14.0, *) {
+            ModernSettingsToolbarButton()
+        } else {
+            Button {
+                NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+            } label: {
+                Image(systemName: "gearshape")
+                    .imageScale(.medium)
+            }
+            .help("Settings".localized)
+        }
+    }
+}
+
+@available(macOS 14.0, *)
+private struct ModernSettingsToolbarButton: View {
+    @Environment(\.openSettings) private var openSettings
+
+    var body: some View {
+        Button {
+            openSettings()
+        } label: {
+            Image(systemName: "gearshape")
+                .imageScale(.medium)
+        }
+        .help("Settings".localized)
     }
 }
 
@@ -388,8 +460,8 @@ private struct LocalBrowserTable: View {
     var body: some View {
         let selection = $viewModel.selectedLocalItemIDs
 
-        return Table(viewModel.localRows, selection: selection) {
-            TableColumn("Name".localized) { row in
+        return Table(viewModel.localRows, selection: selection, sortOrder: $viewModel.localSortOrder) {
+            TableColumn("Name".localized, sortUsing: BrowserRowComparator<LocalBrowserRowModel>(.name)) { row in
                 LocalTableNameCell(
                     viewModel: viewModel,
                     row: row,
@@ -397,14 +469,14 @@ private struct LocalBrowserTable: View {
                     dropTargetID: $dropTargetID
                 )
             }
-            TableColumn("Size".localized) { row in
+            TableColumn("Size".localized, sortUsing: BrowserRowComparator<LocalBrowserRowModel>(.size)) { row in
                 BrowserMetadataCell(
                     text: row.sizeText,
                     alignment: .trailing
                 )
             }
                 .width(min: 90, ideal: 110, max: 140)
-            TableColumn("Modified".localized) { row in
+            TableColumn("Modified".localized, sortUsing: BrowserRowComparator<LocalBrowserRowModel>(.modified)) { row in
                 BrowserMetadataCell(
                     text: row.modifiedText,
                     alignment: .leading
@@ -423,17 +495,25 @@ private struct LocalBrowserTable: View {
             )
         }
         .contextMenu(forSelectionType: LocalItem.ID.self) { selectedIDs in
+            let effectiveIDs = effectiveSelection(from: selectedIDs)
+
             Button("Open".localized) {
-                applySelection(selectedIDs)
+                applySelection(effectiveIDs)
                 viewModel.openPrimarySelection()
             }
-            .disabled(!canOpen(selectedIDs))
+            .disabled(!canOpen(effectiveIDs))
+
+            Button("Open in Finder".localized) {
+                applySelection(effectiveIDs)
+                viewModel.openLocalSelectionInFinder()
+            }
+            .disabled(!canOpenInFinder(effectiveIDs))
 
             Button("Copy".localized) {
-                applySelection(selectedIDs)
+                applySelection(effectiveIDs)
                 viewModel.copyFocusedSelection()
             }
-            .disabled(selectedIDs.isEmpty)
+            .disabled(effectiveIDs.isEmpty)
 
             Button("Paste".localized) {
                 viewModel.paste(into: .local)
@@ -441,22 +521,22 @@ private struct LocalBrowserTable: View {
             .disabled(!viewModel.canPaste(into: .local))
 
             Button("Rename".localized) {
-                applySelection(selectedIDs)
+                applySelection(effectiveIDs)
                 viewModel.renameFocusedSelection()
             }
-            .disabled(selectedIDs.count != 1)
+            .disabled(effectiveIDs.count != 1)
 
             Button("Delete".localized, role: .destructive) {
-                applySelection(selectedIDs)
+                applySelection(effectiveIDs)
                 viewModel.deleteFocusedSelection()
             }
-            .disabled(selectedIDs.isEmpty)
+            .disabled(effectiveIDs.isEmpty)
         } primaryAction: { selectedIDs in
             applySelection(selectedIDs)
             viewModel.openPrimarySelection()
         }
-        .onChange(of: viewModel.selectedLocalItemIDs) { _, _ in
-            viewModel.setFocusedPane(.local)
+        .onChange(of: viewModel.selectedLocalItemIDs) { _ in
+            viewModel.handleLocalSelectionChange()
         }
     }
 
@@ -471,6 +551,14 @@ private struct LocalBrowserTable: View {
         let selectedItems = viewModel.localItems(for: ids)
         return selectedItems.count == 1 && selectedItems[0].isDirectory
     }
+
+    private func canOpenInFinder(_ ids: Set<LocalItem.ID>) -> Bool {
+        !viewModel.isBusy
+    }
+
+    private func effectiveSelection(from ids: Set<LocalItem.ID>) -> Set<LocalItem.ID> {
+        ids.isEmpty ? viewModel.selectedLocalItemIDs : ids
+    }
 }
 
 private struct RemoteBrowserTable: View {
@@ -482,8 +570,8 @@ private struct RemoteBrowserTable: View {
     var body: some View {
         let selection = $viewModel.selectedRemoteItemIDs
 
-        return Table(viewModel.remoteRows, selection: selection) {
-            TableColumn("Name".localized) { row in
+        return Table(viewModel.remoteRows, selection: selection, sortOrder: $viewModel.remoteSortOrder) {
+            TableColumn("Name".localized, sortUsing: BrowserRowComparator<RemoteBrowserRowModel>(.name)) { row in
                 RemoteTableNameCell(
                     viewModel: viewModel,
                     row: row,
@@ -491,14 +579,14 @@ private struct RemoteBrowserTable: View {
                     dropTargetID: $dropTargetID
                 )
             }
-            TableColumn("Size".localized) { row in
+            TableColumn("Size".localized, sortUsing: BrowserRowComparator<RemoteBrowserRowModel>(.size)) { row in
                 BrowserMetadataCell(
                     text: row.sizeText,
                     alignment: .trailing
                 )
             }
                 .width(min: 90, ideal: 110, max: 140)
-            TableColumn("Modified".localized) { row in
+            TableColumn("Modified".localized, sortUsing: BrowserRowComparator<RemoteBrowserRowModel>(.modified)) { row in
                 BrowserMetadataCell(
                     text: row.modifiedText,
                     alignment: .leading
@@ -517,17 +605,19 @@ private struct RemoteBrowserTable: View {
             )
         }
         .contextMenu(forSelectionType: RemoteItem.ID.self) { selectedIDs in
+            let effectiveIDs = effectiveSelection(from: selectedIDs)
+
             Button("Open".localized) {
-                applySelection(selectedIDs)
+                applySelection(effectiveIDs)
                 viewModel.openPrimarySelection()
             }
-            .disabled(!canOpen(selectedIDs))
+            .disabled(!canOpen(effectiveIDs))
 
             Button("Copy".localized) {
-                applySelection(selectedIDs)
+                applySelection(effectiveIDs)
                 viewModel.copyFocusedSelection()
             }
-            .disabled(selectedIDs.isEmpty)
+            .disabled(effectiveIDs.isEmpty)
 
             Button("Paste".localized) {
                 viewModel.paste(into: .remote)
@@ -535,28 +625,28 @@ private struct RemoteBrowserTable: View {
             .disabled(!viewModel.canPaste(into: .remote))
 
             Button("Download".localized) {
-                applySelection(selectedIDs)
+                applySelection(effectiveIDs)
                 viewModel.downloadSelectedRemoteItems()
             }
-            .disabled(selectedIDs.isEmpty)
+            .disabled(effectiveIDs.isEmpty)
 
             Button("Rename".localized) {
-                applySelection(selectedIDs)
+                applySelection(effectiveIDs)
                 viewModel.renameFocusedSelection()
             }
-            .disabled(selectedIDs.count != 1)
+            .disabled(effectiveIDs.count != 1)
 
             Button("Delete".localized, role: .destructive) {
-                applySelection(selectedIDs)
+                applySelection(effectiveIDs)
                 viewModel.deleteFocusedSelection()
             }
-            .disabled(selectedIDs.isEmpty)
+            .disabled(effectiveIDs.isEmpty)
         } primaryAction: { selectedIDs in
             applySelection(selectedIDs)
             viewModel.openPrimarySelection()
         }
-        .onChange(of: viewModel.selectedRemoteItemIDs) { _, _ in
-            viewModel.setFocusedPane(.remote)
+        .onChange(of: viewModel.selectedRemoteItemIDs) { _ in
+            viewModel.handleRemoteSelectionChange()
         }
     }
 
@@ -571,6 +661,10 @@ private struct RemoteBrowserTable: View {
         let selectedItems = viewModel.remoteItems(for: ids)
         return selectedItems.count == 1 && selectedItems[0].isDirectory
     }
+
+    private func effectiveSelection(from ids: Set<RemoteItem.ID>) -> Set<RemoteItem.ID> {
+        ids.isEmpty ? viewModel.selectedRemoteItemIDs : ids
+    }
 }
 
 private struct LocalTableNameCell: View {
@@ -578,51 +672,114 @@ private struct LocalTableNameCell: View {
     let row: LocalBrowserRowModel
     let dragNamespace: Namespace.ID
     @Binding var dropTargetID: LocalItem.ID?
+    @State private var activateEnclosingTable: (() -> Void)?
 
     var body: some View {
         let item = row.item
-        let destination = DropResolution(
-            pane: .local,
-            destinationLocalDirectory: item.url,
-            destinationRemoteDirectory: nil
-        )
-
-        let baseCell = BrowserNameCell(
-            name: row.name,
-            iconName: row.iconName,
-            isDropTarget: dropTargetID == item.id
-        )
-        .contentShape(Rectangle())
-        .simultaneousGesture(
-            TapGesture().onEnded {
-                viewModel.handleLocalPrimaryClick(on: item, modifiers: currentModifierFlags())
-            }
-        )
-
-        if item.isDirectory {
-            draggableCell(baseCell)
-                .dropDestination(for: BrowserTransferBatch.self, action: { batchItems, _ in
-                    for batch in batchItems {
-                        viewModel.handleDrop(batch.items, resolution: destination)
-                    }
-                    return !batchItems.isEmpty
-                }, isTargeted: { isTargeted in
-                    updateDropTarget(isTargeted)
-                })
-                .dropDestination(for: BrowserTransferItem.self, action: { items, _ in
-                    viewModel.handleDrop(items, resolution: destination)
-                    return true
-                }, isTargeted: { isTargeted in
-                    updateDropTarget(isTargeted)
-                })
-                .dropDestination(for: URL.self, action: { urls, _ in
-                    viewModel.handleExternalURLDrop(urls, resolution: destination)
-                    return true
-                }, isTargeted: { isTargeted in
-                    updateDropTarget(isTargeted)
-                })
+        if viewModel.isInlineRenamingLocalItem(item) {
+            InlineRenameBrowserNameCell(
+                iconName: row.iconName,
+                isDropTarget: false,
+                text: Binding(
+                    get: { viewModel.inlineRenameText(for: .local, itemID: item.id) },
+                    set: { viewModel.updateInlineRenameText($0, for: .local, itemID: item.id) }
+                ),
+                activationID: item.id,
+                selectsNameStem: viewModel.shouldSelectNameStemForInlineRename(in: .local, itemID: item.id),
+                onSubmit: viewModel.handleReturnKey,
+                onCancel: viewModel.cancelInlineRename
+            )
         } else {
-            draggableCell(baseCell)
+            let destination = DropResolution(
+                pane: .local,
+                destinationLocalDirectory: item.url,
+                destinationRemoteDirectory: nil
+            )
+
+            let baseCell = BrowserNameCell(
+                name: row.name,
+                iconName: row.iconName,
+                isDropTarget: dropTargetID == item.id
+            )
+            .contextMenu {
+                Button("Open".localized) {
+                    viewModel.selectOnlyLocalItem(item)
+                    viewModel.openPrimarySelection()
+                }
+                .disabled(!item.isDirectory)
+
+                Button("Open in Finder".localized) {
+                    viewModel.selectOnlyLocalItem(item)
+                    viewModel.openLocalSelectionInFinder()
+                }
+                .disabled(viewModel.isBusy)
+
+                Button("Copy".localized) {
+                    viewModel.selectOnlyLocalItem(item)
+                    viewModel.copyFocusedSelection()
+                }
+                .disabled(viewModel.isBusy)
+
+                Button("Paste".localized) {
+                    viewModel.paste(into: .local)
+                }
+                .disabled(!viewModel.canPaste(into: .local))
+
+                Button("Rename".localized) {
+                    viewModel.selectOnlyLocalItem(item)
+                    viewModel.renameFocusedSelection()
+                }
+                .disabled(viewModel.isBusy)
+
+                Button("Delete".localized, role: .destructive) {
+                    viewModel.selectOnlyLocalItem(item)
+                    viewModel.deleteFocusedSelection()
+                }
+                .disabled(viewModel.isBusy)
+            }
+            .contentShape(Rectangle())
+            .simultaneousGesture(
+                TapGesture().onEnded {
+                    activateEnclosingTable?()
+                    viewModel.handleLocalPrimaryClick(on: item, modifiers: currentModifierFlags())
+                }
+            )
+            .simultaneousGesture(
+                TapGesture(count: 2).onEnded {
+                    activateEnclosingTable?()
+                    viewModel.selectOnlyLocalItem(item)
+                    viewModel.openPrimarySelection()
+                }
+            )
+            .background(
+                TableFirstResponderBridge(activate: $activateEnclosingTable)
+            )
+
+            if item.isDirectory {
+                draggableCell(baseCell)
+                    .dropDestination(for: BrowserTransferBatch.self, action: { batchItems, _ in
+                        for batch in batchItems {
+                            viewModel.handleDrop(batch.items, resolution: destination)
+                        }
+                        return !batchItems.isEmpty
+                    }, isTargeted: { isTargeted in
+                        updateDropTarget(isTargeted)
+                    })
+                    .dropDestination(for: BrowserTransferItem.self, action: { items, _ in
+                        viewModel.handleDrop(items, resolution: destination)
+                        return true
+                    }, isTargeted: { isTargeted in
+                        updateDropTarget(isTargeted)
+                    })
+                    .dropDestination(for: URL.self, action: { urls, _ in
+                        viewModel.handleExternalURLDrop(urls, resolution: destination)
+                        return true
+                    }, isTargeted: { isTargeted in
+                        updateDropTarget(isTargeted)
+                    })
+            } else {
+                draggableCell(baseCell)
+            }
         }
     }
 
@@ -649,51 +806,114 @@ private struct RemoteTableNameCell: View {
     let row: RemoteBrowserRowModel
     let dragNamespace: Namespace.ID
     @Binding var dropTargetID: RemoteItem.ID?
+    @State private var activateEnclosingTable: (() -> Void)?
 
     var body: some View {
         let item = row.item
-        let destination = DropResolution(
-            pane: .remote,
-            destinationLocalDirectory: nil,
-            destinationRemoteDirectory: item.path
-        )
-
-        let baseCell = BrowserNameCell(
-            name: row.name,
-            iconName: row.iconName,
-            isDropTarget: dropTargetID == item.id
-        )
-        .contentShape(Rectangle())
-        .simultaneousGesture(
-            TapGesture().onEnded {
-                viewModel.handleRemotePrimaryClick(on: item, modifiers: currentModifierFlags())
-            }
-        )
-
-        if item.isDirectory {
-            draggableCell(baseCell)
-                .dropDestination(for: BrowserTransferBatch.self, action: { batchItems, _ in
-                    for batch in batchItems {
-                        viewModel.handleDrop(batch.items, resolution: destination)
-                    }
-                    return !batchItems.isEmpty
-                }, isTargeted: { isTargeted in
-                    updateDropTarget(isTargeted)
-                })
-                .dropDestination(for: BrowserTransferItem.self, action: { items, _ in
-                    viewModel.handleDrop(items, resolution: destination)
-                    return true
-                }, isTargeted: { isTargeted in
-                    updateDropTarget(isTargeted)
-                })
-                .dropDestination(for: URL.self, action: { urls, _ in
-                    viewModel.handleExternalURLDrop(urls, resolution: destination)
-                    return true
-                }, isTargeted: { isTargeted in
-                    updateDropTarget(isTargeted)
-                })
+        if viewModel.isInlineRenamingRemoteItem(item) {
+            InlineRenameBrowserNameCell(
+                iconName: row.iconName,
+                isDropTarget: false,
+                text: Binding(
+                    get: { viewModel.inlineRenameText(for: .remote, itemID: item.id) },
+                    set: { viewModel.updateInlineRenameText($0, for: .remote, itemID: item.id) }
+                ),
+                activationID: item.id,
+                selectsNameStem: viewModel.shouldSelectNameStemForInlineRename(in: .remote, itemID: item.id),
+                onSubmit: viewModel.handleReturnKey,
+                onCancel: viewModel.cancelInlineRename
+            )
         } else {
-            draggableCell(baseCell)
+            let destination = DropResolution(
+                pane: .remote,
+                destinationLocalDirectory: nil,
+                destinationRemoteDirectory: item.path
+            )
+
+            let baseCell = BrowserNameCell(
+                name: row.name,
+                iconName: row.iconName,
+                isDropTarget: dropTargetID == item.id
+            )
+            .contextMenu {
+                Button("Open".localized) {
+                    viewModel.selectOnlyRemoteItem(item)
+                    viewModel.openPrimarySelection()
+                }
+                .disabled(!item.isDirectory)
+
+                Button("Copy".localized) {
+                    viewModel.selectOnlyRemoteItem(item)
+                    viewModel.copyFocusedSelection()
+                }
+                .disabled(viewModel.isBusy || !viewModel.isConnected)
+
+                Button("Paste".localized) {
+                    viewModel.paste(into: .remote)
+                }
+                .disabled(!viewModel.canPaste(into: .remote))
+
+                Button("Download".localized) {
+                    viewModel.selectOnlyRemoteItem(item)
+                    viewModel.downloadSelectedRemoteItems()
+                }
+                .disabled(viewModel.isBusy || !viewModel.isConnected)
+
+                Button("Rename".localized) {
+                    viewModel.selectOnlyRemoteItem(item)
+                    viewModel.renameFocusedSelection()
+                }
+                .disabled(viewModel.isBusy || !viewModel.isConnected)
+
+                Button("Delete".localized, role: .destructive) {
+                    viewModel.selectOnlyRemoteItem(item)
+                    viewModel.deleteFocusedSelection()
+                }
+                .disabled(viewModel.isBusy || !viewModel.isConnected)
+            }
+            .contentShape(Rectangle())
+            .simultaneousGesture(
+                TapGesture().onEnded {
+                    activateEnclosingTable?()
+                    viewModel.handleRemotePrimaryClick(on: item, modifiers: currentModifierFlags())
+                }
+            )
+            .simultaneousGesture(
+                TapGesture(count: 2).onEnded {
+                    activateEnclosingTable?()
+                    viewModel.selectOnlyRemoteItem(item)
+                    viewModel.openPrimarySelection()
+                }
+            )
+            .background(
+                TableFirstResponderBridge(activate: $activateEnclosingTable)
+            )
+
+            if item.isDirectory {
+                draggableCell(baseCell)
+                    .dropDestination(for: BrowserTransferBatch.self, action: { batchItems, _ in
+                        for batch in batchItems {
+                            viewModel.handleDrop(batch.items, resolution: destination)
+                        }
+                        return !batchItems.isEmpty
+                    }, isTargeted: { isTargeted in
+                        updateDropTarget(isTargeted)
+                    })
+                    .dropDestination(for: BrowserTransferItem.self, action: { items, _ in
+                        viewModel.handleDrop(items, resolution: destination)
+                        return true
+                    }, isTargeted: { isTargeted in
+                        updateDropTarget(isTargeted)
+                    })
+                    .dropDestination(for: URL.self, action: { urls, _ in
+                        viewModel.handleExternalURLDrop(urls, resolution: destination)
+                        return true
+                    }, isTargeted: { isTargeted in
+                        updateDropTarget(isTargeted)
+                    })
+            } else {
+                draggableCell(baseCell)
+            }
         }
     }
 
@@ -726,6 +946,27 @@ private struct BrowserMetadataCell: View {
     }
 }
 
+private struct BrowserPaneSearchField: View {
+    @Binding var text: String
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(.secondary)
+            TextField("Search".localized, text: $text)
+                .textFieldStyle(.plain)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(Color(nsColor: .textBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(Color(nsColor: .separatorColor).opacity(0.35), lineWidth: 1)
+        }
+    }
+}
+
 private struct BrowserPane<Content: View>: View {
     let title: String
     let itemCount: Int
@@ -749,7 +990,7 @@ private struct BrowserPane<Content: View>: View {
             content
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(.background.secondary.opacity(0.35))
+        .background(Color(nsColor: .controlBackgroundColor).opacity(0.35))
         .overlay {
             RoundedRectangle(cornerRadius: 18, style: .continuous)
                 .stroke(isDropTargeted ? Color.accentColor : Color.clear, lineWidth: 2)
@@ -758,11 +999,30 @@ private struct BrowserPane<Content: View>: View {
     }
 }
 
+private struct PaneUnavailableView: View {
+    let title: String
+    let systemImage: String
+    let description: String
+
+    var body: some View {
+        VStack(spacing: 12) {
+            Image(systemName: systemImage)
+                .font(.system(size: 34, weight: .medium))
+            Text(title)
+                .font(.headline)
+            Text(description)
+                .font(.callout)
+                .multilineTextAlignment(.center)
+        }
+        .foregroundStyle(.secondary)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(24)
+    }
+}
+
 private struct SavedSiteRow: View {
     let profile: ConnectionProfile
     let isConnected: Bool
-    let onConnect: () -> Void
-    let onDisconnect: () -> Void
     let onEdit: () -> Void
     let onDelete: () -> Void
 
@@ -808,7 +1068,7 @@ private struct SavedSiteRow: View {
         .contentShape(Rectangle())
         .accessibilityElement(children: .contain)
         .accessibilityLabel(Text(profile.name))
-        .accessibilityHint(Text(isConnected ? "Disconnect".localized : "Connect".localized))
+        .accessibilityHint(Text("Saved Site".localized))
     }
 }
 
@@ -826,12 +1086,486 @@ private struct BrowserNameCell: View {
                 .lineLimit(1)
             Spacer(minLength: 0)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 4)
         .padding(.horizontal, 6)
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .fill(isDropTarget ? Color.accentColor.opacity(0.18) : Color.clear)
         )
+    }
+}
+
+private struct InlineRenameBrowserNameCell: View {
+    let iconName: String
+    let isDropTarget: Bool
+    @Binding var text: String
+    let activationID: String
+    let selectsNameStem: Bool
+    let onSubmit: () -> Void
+    let onCancel: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: iconName)
+                .foregroundStyle(Color.accentColor)
+                .frame(width: 18)
+            InlineRenameTextField(
+                text: $text,
+                activationID: activationID,
+                selectsNameStem: selectsNameStem,
+                onSubmit: onSubmit,
+                onCancel: onCancel
+            )
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 4)
+        .padding(.horizontal, 6)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(isDropTarget ? Color.accentColor.opacity(0.18) : Color.clear)
+        )
+    }
+}
+
+private struct InlineRenameTextField: NSViewRepresentable {
+    @Binding var text: String
+    let activationID: String
+    let selectsNameStem: Bool
+    let onSubmit: () -> Void
+    let onCancel: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(parent: self)
+    }
+
+    func makeNSView(context: Context) -> NSTextField {
+        let textField = NSTextField(string: text)
+        textField.delegate = context.coordinator
+        textField.isBordered = false
+        textField.drawsBackground = false
+        textField.focusRingType = .default
+        textField.font = .preferredFont(forTextStyle: .body)
+        textField.cell?.lineBreakMode = .byClipping
+        textField.cell?.usesSingleLineMode = true
+        return textField
+    }
+
+    func updateNSView(_ nsView: NSTextField, context: Context) {
+        context.coordinator.parent = self
+        if nsView.stringValue != text {
+            nsView.stringValue = text
+        }
+        context.coordinator.activateIfNeeded(for: nsView)
+    }
+
+    final class Coordinator: NSObject, NSTextFieldDelegate {
+        var parent: InlineRenameTextField
+        private var currentActivationID: String?
+        private var didHandleCommand = false
+
+        init(parent: InlineRenameTextField) {
+            self.parent = parent
+        }
+
+        func controlTextDidChange(_ obj: Notification) {
+            guard let textField = obj.object as? NSTextField else { return }
+            parent.text = textField.stringValue
+        }
+
+        func controlTextDidEndEditing(_ obj: Notification) {
+            if didHandleCommand {
+                didHandleCommand = false
+                return
+            }
+            parent.onSubmit()
+        }
+
+        func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+            if commandSelector == #selector(NSResponder.insertNewline(_:)) {
+                didHandleCommand = true
+                parent.onSubmit()
+                return true
+            }
+
+            if commandSelector == #selector(NSResponder.cancelOperation(_:)) {
+                didHandleCommand = true
+                parent.onCancel()
+                return true
+            }
+
+            return false
+        }
+
+        func activateIfNeeded(for textField: NSTextField) {
+            guard currentActivationID != parent.activationID else { return }
+            currentActivationID = parent.activationID
+
+            DispatchQueue.main.async {
+                guard let window = textField.window else { return }
+                window.makeFirstResponder(textField)
+
+                let selectionRange = Self.selectionRange(
+                    for: textField.stringValue,
+                    selectsNameStem: self.parent.selectsNameStem
+                )
+
+                if let editor = window.fieldEditor(true, for: textField) as? NSTextView {
+                    editor.selectedRange = selectionRange
+                } else {
+                    textField.currentEditor()?.selectedRange = selectionRange
+                }
+            }
+        }
+
+        private static func selectionRange(for name: String, selectsNameStem: Bool) -> NSRange {
+            let fullLength = (name as NSString).length
+            guard selectsNameStem else {
+                return NSRange(location: 0, length: fullLength)
+            }
+
+            let fileExtension = ((name as NSString).pathExtension as NSString)
+            let extensionLength = fileExtension.length
+            guard extensionLength > 0 else {
+                return NSRange(location: 0, length: fullLength)
+            }
+
+            return NSRange(location: 0, length: max(0, fullLength - extensionLength - 1))
+        }
+    }
+}
+
+private struct TableFirstResponderBridge: NSViewRepresentable {
+    @Binding var activate: (() -> Void)?
+
+    func makeNSView(context: Context) -> NSView {
+        NSView(frame: .zero)
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        DispatchQueue.main.async {
+            activate = { [weak nsView] in
+                guard let nsView,
+                      let window = nsView.window,
+                      let tableView = nsView.enclosingTableView else {
+                    return
+                }
+
+                window.makeFirstResponder(tableView)
+            }
+        }
+    }
+}
+
+private struct ListDoubleClickBridge: NSViewRepresentable {
+    let onDoubleClick: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onDoubleClick: onDoubleClick)
+    }
+
+    func makeNSView(context: Context) -> ListDoubleClickHostingView {
+        let view = ListDoubleClickHostingView(frame: .zero)
+        view.coordinator = context.coordinator
+        context.coordinator.attach(to: view)
+        return view
+    }
+
+    func updateNSView(_ nsView: ListDoubleClickHostingView, context: Context) {
+        context.coordinator.onDoubleClick = onDoubleClick
+        nsView.coordinator = context.coordinator
+        context.coordinator.attach(to: nsView)
+    }
+
+    final class Coordinator: NSObject {
+        var onDoubleClick: () -> Void
+        private weak var tableView: NSTableView?
+        private weak var previousTarget: AnyObject?
+        private var previousDoubleAction: Selector?
+
+        init(onDoubleClick: @escaping () -> Void) {
+            self.onDoubleClick = onDoubleClick
+        }
+
+        deinit {
+            detach()
+        }
+
+        func attach(to view: NSView) {
+            guard let tableView = view.nearbyTableView else {
+                return
+            }
+
+            guard tableView !== self.tableView else {
+                if tableView.target !== self || tableView.doubleAction != #selector(handleDoubleClick(_:)) {
+                    tableView.target = self
+                    tableView.doubleAction = #selector(handleDoubleClick(_:))
+                }
+                return
+            }
+
+            detach()
+            previousTarget = tableView.target as AnyObject?
+            previousDoubleAction = tableView.doubleAction
+            tableView.target = self
+            tableView.doubleAction = #selector(handleDoubleClick(_:))
+            self.tableView = tableView
+        }
+
+        private func detach() {
+            guard let tableView else {
+                return
+            }
+
+            if tableView.target === self {
+                tableView.target = previousTarget
+                tableView.doubleAction = previousDoubleAction
+            }
+
+            self.tableView = nil
+            self.previousTarget = nil
+            self.previousDoubleAction = nil
+        }
+
+        @objc private func handleDoubleClick(_ sender: Any?) {
+            _ = sender
+            onDoubleClick()
+        }
+    }
+}
+
+private final class ListDoubleClickHostingView: NSView {
+    weak var coordinator: ListDoubleClickBridge.Coordinator?
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        coordinator?.attach(to: self)
+    }
+
+    override func viewDidMoveToSuperview() {
+        super.viewDidMoveToSuperview()
+        coordinator?.attach(to: self)
+    }
+
+    override func layout() {
+        super.layout()
+        coordinator?.attach(to: self)
+    }
+}
+
+private extension NSView {
+    var enclosingTableView: NSTableView? {
+        var ancestor = superview
+        while let current = ancestor {
+            if let tableView = current as? NSTableView {
+                return tableView
+            }
+            ancestor = current.superview
+        }
+        return nil
+    }
+
+    var nearbyTableView: NSTableView? {
+        if let enclosingTableView {
+            return enclosingTableView
+        }
+
+        if let enclosingScrollView,
+           let tableView = enclosingScrollView.firstDescendant(of: NSTableView.self) {
+            return tableView
+        }
+
+        var ancestor = superview
+        while let current = ancestor {
+            if let tableView = current.firstDescendant(of: NSTableView.self) {
+                return tableView
+            }
+            ancestor = current.superview
+        }
+
+        return nil
+    }
+
+    var enclosingScrollView: NSScrollView? {
+        var ancestor = superview
+        while let current = ancestor {
+            if let scrollView = current as? NSScrollView {
+                return scrollView
+            }
+            ancestor = current.superview
+        }
+        return nil
+    }
+
+    func firstDescendant<T: NSView>(of type: T.Type) -> T? {
+        for subview in subviews {
+            if let typedSubview = subview as? T {
+                return typedSubview
+            }
+
+            if let descendant = subview.firstDescendant(of: type) {
+                return descendant
+            }
+        }
+
+        return nil
+    }
+}
+
+private struct BrowserPaneKeyHandler: NSViewRepresentable {
+    let isActive: Bool
+    let isInlineRenaming: Bool
+    let canHandleReturn: Bool
+    let canHandleEscape: Bool
+    let onReturn: () -> Void
+    let onEscape: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(parent: self)
+    }
+
+    func makeNSView(context: Context) -> BrowserPaneKeyHandlingView {
+        let view = BrowserPaneKeyHandlingView(frame: .zero)
+        context.coordinator.configure(view)
+        return view
+    }
+
+    func updateNSView(_ nsView: BrowserPaneKeyHandlingView, context: Context) {
+        context.coordinator.parent = self
+        context.coordinator.configure(nsView)
+        context.coordinator.syncFirstResponderIfNeeded(for: nsView)
+    }
+
+    final class Coordinator {
+        var parent: BrowserPaneKeyHandler
+
+        init(parent: BrowserPaneKeyHandler) {
+            self.parent = parent
+        }
+
+        func configure(_ view: BrowserPaneKeyHandlingView) {
+            view.canHandleReturn = parent.canHandleReturn
+            view.canHandleEscape = parent.canHandleEscape
+            view.onReturn = parent.onReturn
+            view.onEscape = parent.onEscape
+        }
+
+        func syncFirstResponderIfNeeded(for view: BrowserPaneKeyHandlingView) {
+            _ = view
+        }
+    }
+}
+
+private final class BrowserPaneKeyHandlingView: NSView {
+    var canHandleReturn = false
+    var canHandleEscape = false
+    var onReturn: (() -> Void)?
+    var onEscape: (() -> Void)?
+
+    override var acceptsFirstResponder: Bool { true }
+
+    override func keyDown(with event: NSEvent) {
+        let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        guard modifiers.isEmpty else {
+            super.keyDown(with: event)
+            return
+        }
+
+        switch event.keyCode {
+        case 36, 76:
+            guard canHandleReturn else {
+                super.keyDown(with: event)
+                return
+            }
+            onReturn?()
+        case 53:
+            guard canHandleEscape else {
+                super.keyDown(with: event)
+                return
+            }
+            onEscape?()
+        default:
+            super.keyDown(with: event)
+        }
+    }
+}
+
+private struct BrowserWindowKeyFallback: NSViewRepresentable {
+    let isInlineRenaming: Bool
+    let canHandleReturn: Bool
+    let canHandleEscape: Bool
+    let onReturn: () -> Void
+    let onEscape: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(parent: self)
+    }
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        context.coordinator.attach(to: view)
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.parent = self
+        context.coordinator.attach(to: nsView)
+    }
+
+    final class Coordinator {
+        var parent: BrowserWindowKeyFallback
+        private weak var view: NSView?
+        private var monitor: Any?
+
+        init(parent: BrowserWindowKeyFallback) {
+            self.parent = parent
+        }
+
+        deinit {
+            if let monitor {
+                NSEvent.removeMonitor(monitor)
+            }
+        }
+
+        func attach(to view: NSView) {
+            self.view = view
+            guard monitor == nil else { return }
+
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+                self?.handle(event) ?? event
+            }
+        }
+
+        private func handle(_ event: NSEvent) -> NSEvent? {
+            guard let view,
+                  let window = view.window,
+                  window.isKeyWindow else {
+                return event
+            }
+
+            if window.firstResponder is NSTextView, parent.isInlineRenaming {
+                return event
+            }
+
+            let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            if !modifiers.isEmpty {
+                return event
+            }
+
+            switch event.keyCode {
+            case 36, 76:
+                guard parent.canHandleReturn else { return event }
+                parent.onReturn()
+                return nil
+            case 53:
+                guard parent.canHandleEscape else { return event }
+                parent.onEscape()
+                return nil
+            default:
+                return event
+            }
+        }
     }
 }
 

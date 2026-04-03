@@ -9,7 +9,7 @@ This file is the repo-level working guide for agents modifying `XConnectFTP`.
 - App name: `XConnectFTP`
 - Platform: macOS SwiftUI desktop app
 - Protocols: `FTP` and explicit `FTPS`
-- Main workflow: dual-pane local/remote browser with Finder-like selection, drag/drop, copy/paste, upload/download, rename, delete
+- Main workflow: dual-pane local/remote browser with Finder-like selection, per-pane search, sortable `Name`/`Size`/`Modified` columns, drag/drop, copy/paste, upload/download, rename, delete
 
 ## Build And Test
 
@@ -68,6 +68,10 @@ If localization helpers are used inside files compiled by the SwiftPM validation
 
 - Preserve native `Table` selection behavior first.
 - Prefer table-level context menus and primary actions over per-cell gesture hacks.
+- Keep browser search/sort state pane-specific in `SessionViewModel` via `localSearchText` / `remoteSearchText` and `localSortOrder` / `remoteSortOrder`.
+- When changing browser filtering or sorting, rebuild displayed rows from `localDirectorySnapshot` / `remoteDirectorySnapshot`; do not mutate only `localRows` / `remoteRows` and leave selection state behind.
+- Browser column sorting is backed by `BrowserRowComparator` in [XConnectFTP/Models.swift](/Users/minh.nguyen3/Desktop/project/XConnectFTP/XConnectFTP/Models.swift). Keep folders grouped before files and keep unknown `Size` / `Modified` values last unless the task explicitly changes that policy.
+- Search currently matches file and folder names only, using case-insensitive and diacritic-insensitive matching.
 - For drag/drop custom payloads, keep `UTType(exportedAs:)` identifiers in sync with `UTExportedTypeDeclarations` in [Config/Info.plist](/Users/minh.nguyen3/Desktop/project/XConnectFTP/Config/Info.plist).
 - For remote export drag flows, do not break `RemoteFilePromiseRegistry` registration.
 
@@ -82,6 +86,13 @@ If localization helpers are used inside files compiled by the SwiftPM validation
 - Any new `statusMessage` assignment must be localized.
 - Any new `BrowserInteractionError`, `StorageError`, `FTPError`, or transfer verification error must be localized.
 - Raw server payloads may still appear inside formatted localized wrappers when needed for diagnostics.
+
+## Browser Search / Sort Hotspots
+
+- [XConnectFTP/ContentView.swift](/Users/minh.nguyen3/Desktop/project/XConnectFTP/XConnectFTP/ContentView.swift): pane search fields and sortable `TableColumn` definitions for local and remote panes.
+- [XConnectFTP/SessionViewModel.swift](/Users/minh.nguyen3/Desktop/project/XConnectFTP/XConnectFTP/SessionViewModel.swift): pane-specific search/sort state, filtered display snapshot rebuilds, and selection preservation.
+- [XConnectFTP/Models.swift](/Users/minh.nguyen3/Desktop/project/XConnectFTP/XConnectFTP/Models.swift): `BrowserRowComparator`, `BrowserSearchMatcher`, and row model sort keys.
+- [XConnectFTPTests/PerformanceServicesTests.swift](/Users/minh.nguyen3/Desktop/project/XConnectFTP/XConnectFTPTests/PerformanceServicesTests.swift): baseline tests covering search matching and browser row sorting behavior.
 
 ## Files To Check When Touching Localization
 

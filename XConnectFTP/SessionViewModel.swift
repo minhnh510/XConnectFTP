@@ -159,18 +159,55 @@ private final class RemoteExportCoordinator {
     }
 }
 
+private struct InlineRenameSession {
+    let pane: BrowserPaneKind
+    let itemID: String
+    let originalName: String
+    let isDirectory: Bool
+    var draftName: String
+
+    var shouldSelectNameStem: Bool {
+        guard !isDirectory else { return false }
+        let fileExtension = (originalName as NSString).pathExtension
+        guard !fileExtension.isEmpty else { return false }
+        return originalName != ".\(fileExtension)"
+    }
+}
+
 @MainActor
 final class SessionViewModel: ObservableObject {
+    private static let lastConnectedProfileIDStorageKey = "lastConnectedProfileID"
+
     @Published var profiles: [ConnectionProfile]
     @Published var selectedProfileID: ConnectionProfile.ID?
     @Published var remoteCurrentPath: String = "/"
     @Published var remoteItems: [RemoteItem] = []
     @Published var remoteRows: [RemoteBrowserRowModel] = []
+    @Published var remoteSearchText = "" {
+        didSet {
+            handleRemoteSearchTextChange(from: oldValue)
+        }
+    }
+    @Published var remoteSortOrder: [BrowserRowComparator<RemoteBrowserRowModel>] = [BrowserRowComparator(.name)] {
+        didSet {
+            handleRemoteSortOrderChange(from: oldValue)
+        }
+    }
     @Published var selectedRemoteItemIDs: Set<RemoteItem.ID> = []
     @Published var localRootURL: URL?
     @Published var localCurrentURL: URL?
     @Published var localItems: [LocalItem] = []
     @Published var localRows: [LocalBrowserRowModel] = []
+    @Published var localSearchText = "" {
+        didSet {
+            handleLocalSearchTextChange(from: oldValue)
+        }
+    }
+    @Published var localSortOrder: [BrowserRowComparator<LocalBrowserRowModel>] = [BrowserRowComparator(.name)] {
+        didSet {
+            handleLocalSortOrderChange(from: oldValue)
+        }
+    }
     @Published var selectedLocalItemIDs: Set<LocalItem.ID> = []
     @Published var focusedPane: BrowserPaneKind = .local
     @Published var isConnected = false
@@ -180,10 +217,12 @@ final class SessionViewModel: ObservableObject {
     @Published var siteEditorDraft = ConnectionProfileDraft()
     @Published var errorMessage: String?
     @Published var statusMessage = "Not connected.".localized
+    @Published private var inlineRenameSession: InlineRenameSession?
 
     private let connectionStore: ConnectionStore
     private let appleSyncController: AppleSyncController
     private let bookmarkStore: BookmarkStore
+    private let userDefaults: UserDefaults
     private let localDirectoryService: LocalDirectoryService
     private let localDirectoryWatcher = LocalDirectoryWatcher()
     private let transferCoordinator: TransferCoordinator
@@ -194,12 +233,18 @@ final class SessionViewModel: ObservableObject {
     private var editingProfileID: UUID?
     private var activeRootAccessURL: URL?
     private var connectedProfileID: UUID?
+    private var selectedProfileRestoreTask: Task<Void, Never>?
     private var hasBootstrapped = false
     private var localLoadGeneration = 0
     private var localSelectionAnchorID: LocalItem.ID?
+    private var localDirectorySnapshot: LocalBrowserSnapshot?
     private var localSnapshot: LocalBrowserSnapshot?
+    private var pendingLocalSelectionID: LocalItem.ID?
     private var remoteSelectionAnchorID: RemoteItem.ID?
+    private var remoteDirectorySnapshot: RemoteBrowserSnapshot?
     private var remoteSnapshot: RemoteBrowserSnapshot?
+    private var pendingRemoteSelectionID: RemoteItem.ID?
+    private var queuedInlineRenameRestart = false
     private var clipboardSnapshot: ClipboardSnapshot?
 
     let transferProgressModel = TransferProgressModel()
@@ -208,6 +253,7 @@ final class SessionViewModel: ObservableObject {
         appleSyncController: AppleSyncController,
         connectionStore: ConnectionStore = ConnectionStore(),
         bookmarkStore: BookmarkStore = BookmarkStore(),
+        userDefaults: UserDefaults = .standard,
         localDirectoryService: LocalDirectoryService = LocalDirectoryService(),
         ftpClient: FTPClientProtocol = FTPStreamClient(trustPrompt: { host, reason in
             await MainActor.run {
@@ -218,6 +264,7 @@ final class SessionViewModel: ObservableObject {
         self.appleSyncController = appleSyncController
         self.connectionStore = connectionStore
         self.bookmarkStore = bookmarkStore
+        self.userDefaults = userDefaults
         self.localDirectoryService = localDirectoryService
         self.ftpClient = ftpClient
         self.transferCoordinator = TransferCoordinator(ftpClient: ftpClient)
@@ -226,6 +273,7 @@ final class SessionViewModel: ObservableObject {
     }
 
     deinit {
+        selectedProfileRestoreTask?.cancel()
         localDirectoryWatcher.stopWatching()
         activeRootAccessURL?.stopAccessingSecurityScopedResource()
         let ftpClient = self.ftpClient
@@ -266,6 +314,14 @@ final class SessionViewModel: ObservableObject {
 
     var primarySelectedLocalItem: LocalItem? {
         selectedLocalItems.count == 1 ? selectedLocalItems.first : nil
+    }
+
+    var isInlineRenaming: Bool {
+        inlineRenameSession != nil
+    }
+
+    var canHandleRenameReturnKey: Bool {
+        isInlineRenaming || canRenameFocusedSelection || hasPendingRenameSelectionTransition
     }
 
     var canConnect: Bool {
@@ -334,9 +390,9 @@ final class SessionViewModel: ObservableObject {
         guard !isBusy else { return false }
         switch focusedPane {
         case .local:
-            return selectedLocalItemIDs.count == 1
+            return primarySelectedLocalItem != nil
         case .remote:
-            return isConnected && selectedRemoteItemIDs.count == 1
+            return isConnected && primarySelectedRemoteItem != nil
         }
     }
 
@@ -360,9 +416,11 @@ final class SessionViewModel: ObservableObject {
 
         let loadedProfiles = connectionStore.loadProfiles(forceRefresh: true)
         profiles = loadedProfiles
-        if selectedProfileID == nil {
-            selectedProfileID = loadedProfiles.first?.id
-        }
+        selectedProfileID = preferredSavedSiteSelection(
+            in: loadedProfiles,
+            currentSelection: selectedProfileID
+        )
+        clearLastConnectedProfileIfMissing(in: loadedProfiles)
 
         await syncSavedSitesIfNeeded()
 
@@ -388,7 +446,94 @@ final class SessionViewModel: ObservableObject {
             return
         }
 
-        restoreLocalRootForCurrentProfile()
+        guard connectedProfileID == nil else {
+            return
+        }
+
+        selectedProfileRestoreTask?.cancel()
+        let selectedProfileID = self.selectedProfileID
+        selectedProfileRestoreTask = Task { @MainActor [weak self] in
+            await Task.yield()
+            guard let self,
+                  !Task.isCancelled,
+                  self.connectedProfileID == nil,
+                  self.selectedProfileID == selectedProfileID else {
+                return
+            }
+            self.restoreLocalRootForCurrentProfile()
+        }
+    }
+
+    private func handleLocalSearchTextChange(from previousValue: String) {
+        guard localSearchText != previousValue else {
+            return
+        }
+
+        rebuildLocalBrowserState(previousSelection: selectedLocalItemIDs)
+    }
+
+    private func handleRemoteSearchTextChange(from previousValue: String) {
+        guard remoteSearchText != previousValue else {
+            return
+        }
+
+        rebuildRemoteBrowserState(previousSelection: selectedRemoteItemIDs)
+    }
+
+    private func handleLocalSortOrderChange(from previousValue: [BrowserRowComparator<LocalBrowserRowModel>]) {
+        let normalized = Self.normalizedSortOrder(localSortOrder)
+        if localSortOrder != normalized {
+            localSortOrder = normalized
+            return
+        }
+        guard localSortOrder != previousValue else {
+            return
+        }
+
+        rebuildLocalBrowserState(previousSelection: selectedLocalItemIDs)
+    }
+
+    private func handleRemoteSortOrderChange(from previousValue: [BrowserRowComparator<RemoteBrowserRowModel>]) {
+        let normalized = Self.normalizedSortOrder(remoteSortOrder)
+        if remoteSortOrder != normalized {
+            remoteSortOrder = normalized
+            return
+        }
+        guard remoteSortOrder != previousValue else {
+            return
+        }
+
+        rebuildRemoteBrowserState(previousSelection: selectedRemoteItemIDs)
+    }
+
+    private static func normalizedSortOrder<RowValue: BrowserSortableRow>(
+        _ order: [BrowserRowComparator<RowValue>]
+    ) -> [BrowserRowComparator<RowValue>] {
+        if order.isEmpty {
+            return [BrowserRowComparator(.name)]
+        }
+        return order
+    }
+
+    private static func sortedRows<RowValue: BrowserSortableRow>(
+        _ rows: [RowValue],
+        using order: [BrowserRowComparator<RowValue>]
+    ) -> [RowValue] {
+        let comparators = normalizedSortOrder(order)
+        return rows.sorted { lhs, rhs in
+            for comparator in comparators {
+                switch comparator.compare(lhs, rhs) {
+                case .orderedAscending:
+                    return true
+                case .orderedDescending:
+                    return false
+                case .orderedSame:
+                    continue
+                }
+            }
+
+            return false
+        }
     }
 
     func canCopy(from pane: BrowserPaneKind) -> Bool {
@@ -496,7 +641,13 @@ final class SessionViewModel: ObservableObject {
             do {
                 self.profiles = try self.connectionStore.delete(profile: profile)
                 self.bookmarkStore.clearRootBookmark(for: profile.id)
-                self.selectedProfileID = self.profiles.first?.id
+                if self.lastConnectedProfileID == profile.id {
+                    self.persistLastConnectedProfileID(nil)
+                }
+                self.selectedProfileID = self.preferredSavedSiteSelection(
+                    in: self.profiles,
+                    currentSelection: self.selectedProfileID == profile.id ? nil : self.selectedProfileID
+                )
                 self.statusMessage = "Deleted site %@.".localized(profile.name)
                 self.restoreLocalRootForCurrentProfile()
                 await self.syncSavedSitesIfNeeded()
@@ -519,6 +670,7 @@ final class SessionViewModel: ObservableObject {
             let password = try viewModel.connectionStore.password(for: profile)
             let workingDirectory = try await viewModel.ftpClient.connect(profile: profile, password: password)
             viewModel.connectedProfileID = profile.id
+            viewModel.persistLastConnectedProfileID(profile.id)
             viewModel.isConnected = true
             viewModel.remoteCurrentPath = workingDirectory
             viewModel.restoreLocalRootForCurrentProfile()
@@ -595,6 +747,28 @@ final class SessionViewModel: ObservableObject {
         guard item.isDirectory else { return }
         focusedPane = .local
         requestLocalDirectoryLoad(item.url)
+    }
+
+    func openLocalSelectionInFinder() {
+        guard !isBusy else { return }
+
+        focusedPane = .local
+        let urls = selectedLocalItems.map(\.url)
+
+        if !urls.isEmpty {
+            NSWorkspace.shared.activateFileViewerSelecting(urls)
+            statusMessage = localizedSingleOrMany(
+                count: urls.count,
+                name: urls[0].lastPathComponent,
+                singularKey: "Opened %@ in Finder.",
+                pluralKey: "Opened %lld items in Finder."
+            )
+            return
+        }
+
+        guard let currentURL = localCurrentURL else { return }
+        NSWorkspace.shared.open(currentURL)
+        statusMessage = "Opened %@ in Finder.".localized(currentURL.lastPathComponent)
     }
 
     func goToRemoteParent() {
@@ -689,12 +863,203 @@ final class SessionViewModel: ObservableObject {
         }
     }
 
-    func renameFocusedSelection() {
+    @discardableResult
+    func renameFocusedSelection() -> Bool {
+        guard !isBusy else { return false }
         switch focusedPane {
         case .local:
-            renameSelectedLocalItem()
+            return beginInlineRenameForSelectedLocalItem()
         case .remote:
-            renameSelectedRemoteItem()
+            return beginInlineRenameForSelectedRemoteItem()
+        }
+    }
+
+    func handleReturnKey() {
+        if isInlineRenaming {
+            commitInlineRename()
+            return
+        }
+
+        if renameFocusedSelection() {
+            return
+        }
+
+        if hasPendingRenameSelectionTransition {
+            queuedInlineRenameRestart = true
+        }
+    }
+
+    func cancelInlineRename() {
+        inlineRenameSession = nil
+    }
+
+    func inlineRenameText(for pane: BrowserPaneKind, itemID: String) -> String {
+        guard let inlineRenameSession,
+              inlineRenameSession.pane == pane,
+              inlineRenameSession.itemID == itemID else {
+            return ""
+        }
+        return inlineRenameSession.draftName
+    }
+
+    func updateInlineRenameText(_ text: String, for pane: BrowserPaneKind, itemID: String) {
+        guard var inlineRenameSession,
+              inlineRenameSession.pane == pane,
+              inlineRenameSession.itemID == itemID else {
+            return
+        }
+        inlineRenameSession.draftName = text
+        self.inlineRenameSession = inlineRenameSession
+    }
+
+    func isInlineRenamingLocalItem(_ item: LocalItem) -> Bool {
+        inlineRenameSession?.pane == .local && inlineRenameSession?.itemID == item.id
+    }
+
+    func isInlineRenamingRemoteItem(_ item: RemoteItem) -> Bool {
+        inlineRenameSession?.pane == .remote && inlineRenameSession?.itemID == item.id
+    }
+
+    func shouldSelectNameStemForInlineRename(in pane: BrowserPaneKind, itemID: String) -> Bool {
+        guard let inlineRenameSession,
+              inlineRenameSession.pane == pane,
+              inlineRenameSession.itemID == itemID else {
+            return false
+        }
+        return inlineRenameSession.shouldSelectNameStem
+    }
+
+    func handleLocalSelectionChange() {
+        focusedPane = .local
+        guard let inlineRenameSession, inlineRenameSession.pane == .local else { return }
+        if selectedLocalItemIDs != [inlineRenameSession.itemID] {
+            cancelInlineRename()
+        }
+    }
+
+    func handleRemoteSelectionChange() {
+        focusedPane = .remote
+        guard let inlineRenameSession, inlineRenameSession.pane == .remote else { return }
+        if selectedRemoteItemIDs != [inlineRenameSession.itemID] {
+            cancelInlineRename()
+        }
+    }
+
+    @discardableResult
+    private func beginInlineRenameForSelectedLocalItem() -> Bool {
+        guard let item = primarySelectedLocalItem else { return false }
+        ensureLocalSelection(for: item)
+        inlineRenameSession = InlineRenameSession(
+            pane: .local,
+            itemID: item.id,
+            originalName: item.name,
+            isDirectory: item.isDirectory,
+            draftName: item.name
+        )
+        return true
+    }
+
+    @discardableResult
+    private func beginInlineRenameForSelectedRemoteItem() -> Bool {
+        guard let item = primarySelectedRemoteItem else { return false }
+        ensureRemoteSelection(for: item)
+        inlineRenameSession = InlineRenameSession(
+            pane: .remote,
+            itemID: item.id,
+            originalName: item.name,
+            isDirectory: item.isDirectory,
+            draftName: item.name
+        )
+        return true
+    }
+
+    private func commitInlineRename() {
+        guard let inlineRenameSession else { return }
+
+        let newName = inlineRenameSession.draftName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !newName.isEmpty else {
+            cancelInlineRename()
+            return
+        }
+
+        if newName == inlineRenameSession.originalName {
+            cancelInlineRename()
+            return
+        }
+
+        switch inlineRenameSession.pane {
+        case .local:
+            commitInlineRenameForLocalItem(session: inlineRenameSession, newName: newName)
+        case .remote:
+            commitInlineRenameForRemoteItem(session: inlineRenameSession, newName: newName)
+        }
+    }
+
+    private func commitInlineRenameForLocalItem(session: InlineRenameSession, newName: String) {
+        guard let item = localSnapshot?.itemsByID[session.itemID] else {
+            cancelInlineRename()
+            return
+        }
+
+        let destinationURL = item.url
+            .deletingLastPathComponent()
+            .appendingPathComponent(newName, isDirectory: item.isDirectory)
+            .standardizedFileURL
+
+        guard destinationURL.path != item.url.standardizedFileURL.path else {
+            cancelInlineRename()
+            return
+        }
+
+        focusedPane = .local
+        cancelInlineRename()
+        pendingLocalSelectionID = destinationURL.path
+        queuedInlineRenameRestart = false
+        runTask(status: "Renaming %@...".localized(item.name)) { viewModel in
+            do {
+                guard !FileManager.default.fileExists(atPath: destinationURL.path) else {
+                    throw BrowserInteractionError.invalidDrop("Destination %@ already exists.".localized(newName))
+                }
+
+                try FileManager.default.moveItem(at: item.url, to: destinationURL)
+                let parentDirectory = item.url.deletingLastPathComponent().standardizedFileURL
+                await viewModel.invalidateLocalDirectories([parentDirectory])
+                viewModel.requestLocalDirectoryLoad(parentDirectory, forceRefresh: true)
+                viewModel.statusMessage = "Renamed %@ to %@.".localized(item.name, newName)
+            } catch {
+                viewModel.pendingLocalSelectionID = nil
+                viewModel.queuedInlineRenameRestart = false
+                throw error
+            }
+        }
+    }
+
+    private func commitInlineRenameForRemoteItem(session: InlineRenameSession, newName: String) {
+        guard let item = remoteSnapshot?.itemsByID[session.itemID] else {
+            cancelInlineRename()
+            return
+        }
+
+        let destinationPath = FTPPath.join(FTPPath.parent(of: item.path), child: newName)
+        guard FTPPath.normalize(destinationPath) != FTPPath.normalize(item.path) else {
+            cancelInlineRename()
+            return
+        }
+
+        focusedPane = .remote
+        cancelInlineRename()
+        pendingRemoteSelectionID = destinationPath
+        queuedInlineRenameRestart = false
+        runTask(status: "Renaming %@...".localized(item.name)) { viewModel in
+            do {
+                try await viewModel.ftpClient.moveItem(at: item.path, to: destinationPath)
+                viewModel.statusMessage = "Renamed %@ to %@.".localized(item.name, newName)
+                try await viewModel.refreshRemoteDirectory(path: viewModel.remoteCurrentPath, forceRefresh: true)
+            } catch {
+                viewModel.pendingRemoteSelectionID = nil
+                viewModel.queuedInlineRenameRestart = false
+                throw error
+            }
         }
     }
 
@@ -791,52 +1156,6 @@ final class SessionViewModel: ObservableObject {
                 )
                 try await viewModel.refreshRemoteDirectory(path: viewModel.remoteCurrentPath, forceRefresh: true)
             }
-        }
-    }
-
-    func renameSelectedRemoteItem() {
-        guard let item = primarySelectedRemoteItem else { return }
-        guard let newName = CertificatePrompt.presentTextInputDialog(
-            title: "Rename Remote Item".localized,
-            message: "Enter a new name for %@.".localized(item.name),
-            defaultValue: item.name
-        ) else {
-            return
-        }
-
-        focusedPane = .remote
-        runTask(status: "Renaming %@...".localized(item.name)) { viewModel in
-            let destinationPath = FTPPath.join(FTPPath.parent(of: item.path), child: newName)
-            try await viewModel.ftpClient.moveItem(at: item.path, to: destinationPath)
-            viewModel.statusMessage = "Renamed %@ to %@.".localized(item.name, newName)
-            try await viewModel.refreshRemoteDirectory(path: viewModel.remoteCurrentPath, forceRefresh: true)
-        }
-    }
-
-    func renameSelectedLocalItem() {
-        guard let item = primarySelectedLocalItem else { return }
-        guard let newName = CertificatePrompt.presentTextInputDialog(
-            title: "Rename Local Item".localized,
-            message: "Enter a new name for %@.".localized(item.name),
-            defaultValue: item.name
-        ) else {
-            return
-        }
-
-        focusedPane = .local
-        runTask(status: "Renaming %@...".localized(item.name)) { viewModel in
-            let destinationURL = item.url.deletingLastPathComponent().appendingPathComponent(newName, isDirectory: item.isDirectory)
-            guard !FileManager.default.fileExists(atPath: destinationURL.path) else {
-                throw BrowserInteractionError.invalidDrop("Destination %@ already exists.".localized(newName))
-            }
-
-            try FileManager.default.moveItem(at: item.url, to: destinationURL)
-            let affectedDirectories = [
-                item.url.deletingLastPathComponent().standardizedFileURL
-            ]
-            await viewModel.invalidateLocalDirectories(affectedDirectories)
-            viewModel.refreshCurrentLocalDirectoryIfNeeded(affectedDirectories: affectedDirectories)
-            viewModel.statusMessage = "Renamed %@ to %@.".localized(item.name, newName)
         }
     }
 
@@ -1085,11 +1404,23 @@ final class SessionViewModel: ObservableObject {
         localSelectionAnchorID = item.id
     }
 
+    func selectOnlyLocalItem(_ item: LocalItem) {
+        focusedPane = .local
+        selectedLocalItemIDs = [item.id]
+        localSelectionAnchorID = item.id
+    }
+
     func ensureRemoteSelection(for item: RemoteItem) {
         focusedPane = .remote
         if !selectedRemoteItemIDs.contains(item.id) {
             selectedRemoteItemIDs = [item.id]
         }
+        remoteSelectionAnchorID = item.id
+    }
+
+    func selectOnlyRemoteItem(_ item: RemoteItem) {
+        focusedPane = .remote
+        selectedRemoteItemIDs = [item.id]
         remoteSelectionAnchorID = item.id
     }
 
@@ -1281,11 +1612,10 @@ final class SessionViewModel: ObservableObject {
     private func refreshRemoteDirectory(path: String, forceRefresh: Bool = false) async throws {
         let isSameDirectory = FTPPath.normalize(path) == FTPPath.normalize(remoteCurrentPath)
         let items = try await ftpClient.list(path: path, forceRefresh: forceRefresh)
-        let snapshot = makeRemoteSnapshot(from: items, previousSnapshot: isSameDirectory ? remoteSnapshot : nil)
-        let diff = snapshot.diff(from: isSameDirectory ? remoteSnapshot : nil)
+        let snapshot = makeRemoteSnapshot(from: items, previousSnapshot: isSameDirectory ? remoteDirectorySnapshot : nil)
 
         remoteCurrentPath = path
-        applyRemoteSnapshot(snapshot, diff: diff, isSameDirectory: isSameDirectory)
+        applyRemoteSnapshot(snapshot, isSameDirectory: isSameDirectory)
     }
 
     private func restoreLocalRootForCurrentProfile() {
@@ -1327,9 +1657,14 @@ final class SessionViewModel: ObservableObject {
         localCurrentURL = nil
         localItems = []
         localRows = []
+        localDirectorySnapshot = nil
         localSnapshot = nil
         selectedLocalItemIDs = []
         localSelectionAnchorID = nil
+        pendingLocalSelectionID = nil
+        if inlineRenameSession?.pane == .local {
+            inlineRenameSession = nil
+        }
         updateLocalWatcher(for: nil)
     }
 
@@ -1352,15 +1687,20 @@ final class SessionViewModel: ObservableObject {
         let normalizedURL = url.standardizedFileURL
         let sameDirectory = localCurrentURL?.standardizedFileURL == normalizedURL
         let previousSelection = selectedLocalItemIDs
-        let previousSnapshot = sameDirectory ? localSnapshot : nil
+        let previousSnapshot = sameDirectory ? localDirectorySnapshot : nil
 
         localCurrentURL = normalizedURL
         if !sameDirectory {
             selectedLocalItemIDs = []
             localSelectionAnchorID = nil
+            pendingLocalSelectionID = nil
             localItems = []
             localRows = []
+            localDirectorySnapshot = nil
             localSnapshot = nil
+            if inlineRenameSession?.pane == .local {
+                inlineRenameSession = nil
+            }
         }
         updateLocalWatcher(for: normalizedURL)
 
@@ -1375,7 +1715,6 @@ final class SessionViewModel: ObservableObject {
                     guard let self, self.localLoadGeneration == generation else { return }
                     self.applyLocalSnapshot(
                         loadResult.snapshot,
-                        diff: loadResult.diff,
                         isSameDirectory: sameDirectory,
                         previousSelection: previousSelection
                     )
@@ -1413,30 +1752,18 @@ final class SessionViewModel: ObservableObject {
 
     private func applyLocalSnapshot(
         _ snapshot: LocalBrowserSnapshot,
-        diff: DirectoryDiff<LocalItem.ID>,
         isSameDirectory: Bool,
         previousSelection: Set<LocalItem.ID>
     ) {
-        let validIDs = Set(snapshot.itemsByID.keys)
-        let nextSelection = isSameDirectory ? previousSelection.intersection(validIDs) : []
-
-        localSnapshot = snapshot
-        if !isSameDirectory || !diff.isEmpty || localRows.count != snapshot.displayRows.count {
-            localItems = snapshot.items
-            localRows = snapshot.displayRows
-        }
-        selectedLocalItemIDs = nextSelection
-
-        if let localSelectionAnchorID, !validIDs.contains(localSelectionAnchorID) {
-            self.localSelectionAnchorID = nil
-        }
+        localDirectorySnapshot = snapshot
+        rebuildLocalBrowserState(previousSelection: isSameDirectory ? previousSelection : [])
     }
 
     private func makeRemoteSnapshot(
         from items: [RemoteItem],
         previousSnapshot: RemoteBrowserSnapshot?
     ) -> RemoteBrowserSnapshot {
-        let previousVersion = previousSnapshot?.version ?? remoteSnapshot?.version ?? 0
+        let previousVersion = previousSnapshot?.version ?? remoteDirectorySnapshot?.version ?? 0
         return RemoteBrowserSnapshot(
             items: items,
             displayRows: items.map(RemoteBrowserRowModel.init),
@@ -1446,22 +1773,122 @@ final class SessionViewModel: ObservableObject {
 
     private func applyRemoteSnapshot(
         _ snapshot: RemoteBrowserSnapshot,
-        diff: DirectoryDiff<RemoteItem.ID>,
         isSameDirectory: Bool
     ) {
+        remoteDirectorySnapshot = snapshot
+        rebuildRemoteBrowserState(previousSelection: isSameDirectory ? selectedRemoteItemIDs : [])
+    }
+
+    private func rebuildLocalBrowserState(previousSelection: Set<LocalItem.ID>? = nil) {
+        guard let directorySnapshot = localDirectorySnapshot else {
+            localSnapshot = nil
+            localItems = []
+            localRows = []
+            selectedLocalItemIDs = []
+            localSelectionAnchorID = nil
+            if inlineRenameSession?.pane == .local {
+                inlineRenameSession = nil
+            }
+            triggerQueuedInlineRenameRestartIfPossible()
+            return
+        }
+
+        let snapshot = makeLocalDisplaySnapshot(from: directorySnapshot.items, version: directorySnapshot.version)
         let validIDs = Set(snapshot.itemsByID.keys)
-        let nextSelection = isSameDirectory ? selectedRemoteItemIDs.intersection(validIDs) : []
+        var nextSelection = (previousSelection ?? selectedLocalItemIDs).intersection(validIDs)
+
+        if let pendingLocalSelectionID, validIDs.contains(pendingLocalSelectionID) {
+            nextSelection = [pendingLocalSelectionID]
+            localSelectionAnchorID = pendingLocalSelectionID
+            self.pendingLocalSelectionID = nil
+        } else if pendingLocalSelectionID != nil {
+            self.pendingLocalSelectionID = nil
+        }
+
+        localSnapshot = snapshot
+        if localItems != snapshot.items {
+            localItems = snapshot.items
+        }
+        if localRows != snapshot.displayRows {
+            localRows = snapshot.displayRows
+        }
+        if selectedLocalItemIDs != nextSelection {
+            selectedLocalItemIDs = nextSelection
+        }
+
+        if let localSelectionAnchorID, !validIDs.contains(localSelectionAnchorID) {
+            self.localSelectionAnchorID = nil
+        }
+        if let inlineRenameSession, inlineRenameSession.pane == .local, !validIDs.contains(inlineRenameSession.itemID) {
+            self.inlineRenameSession = nil
+        }
+        triggerQueuedInlineRenameRestartIfPossible()
+    }
+
+    private func rebuildRemoteBrowserState(previousSelection: Set<RemoteItem.ID>? = nil) {
+        guard let directorySnapshot = remoteDirectorySnapshot else {
+            remoteSnapshot = nil
+            remoteItems = []
+            remoteRows = []
+            selectedRemoteItemIDs = []
+            remoteSelectionAnchorID = nil
+            if inlineRenameSession?.pane == .remote {
+                inlineRenameSession = nil
+            }
+            triggerQueuedInlineRenameRestartIfPossible()
+            return
+        }
+
+        let snapshot = makeRemoteDisplaySnapshot(from: directorySnapshot.items, version: directorySnapshot.version)
+        let validIDs = Set(snapshot.itemsByID.keys)
+        var nextSelection = (previousSelection ?? selectedRemoteItemIDs).intersection(validIDs)
+
+        if let pendingRemoteSelectionID, validIDs.contains(pendingRemoteSelectionID) {
+            nextSelection = [pendingRemoteSelectionID]
+            remoteSelectionAnchorID = pendingRemoteSelectionID
+            self.pendingRemoteSelectionID = nil
+        } else if pendingRemoteSelectionID != nil {
+            self.pendingRemoteSelectionID = nil
+        }
 
         remoteSnapshot = snapshot
-        if !isSameDirectory || !diff.isEmpty || remoteRows.count != snapshot.displayRows.count {
+        if remoteItems != snapshot.items {
             remoteItems = snapshot.items
+        }
+        if remoteRows != snapshot.displayRows {
             remoteRows = snapshot.displayRows
         }
-        selectedRemoteItemIDs = nextSelection
+        if selectedRemoteItemIDs != nextSelection {
+            selectedRemoteItemIDs = nextSelection
+        }
 
         if let remoteSelectionAnchorID, !validIDs.contains(remoteSelectionAnchorID) {
             self.remoteSelectionAnchorID = nil
         }
+        if let inlineRenameSession, inlineRenameSession.pane == .remote, !validIDs.contains(inlineRenameSession.itemID) {
+            self.inlineRenameSession = nil
+        }
+        triggerQueuedInlineRenameRestartIfPossible()
+    }
+
+    private func makeLocalDisplaySnapshot(from items: [LocalItem], version: Int) -> LocalBrowserSnapshot {
+        let filteredItems = items.filter { BrowserSearchMatcher.matches($0.name, query: localSearchText) }
+        let rows = Self.sortedRows(filteredItems.map(LocalBrowserRowModel.init), using: localSortOrder)
+        return LocalBrowserSnapshot(
+            items: rows.map(\.item),
+            displayRows: rows,
+            version: version
+        )
+    }
+
+    private func makeRemoteDisplaySnapshot(from items: [RemoteItem], version: Int) -> RemoteBrowserSnapshot {
+        let filteredItems = items.filter { BrowserSearchMatcher.matches($0.name, query: remoteSearchText) }
+        let rows = Self.sortedRows(filteredItems.map(RemoteBrowserRowModel.init), using: remoteSortOrder)
+        return RemoteBrowserSnapshot(
+            items: rows.map(\.item),
+            displayRows: rows,
+            version: version
+        )
     }
 
     private func invalidateLocalDirectories(_ directories: [URL]) async {
@@ -1505,6 +1932,7 @@ final class SessionViewModel: ObservableObject {
                 if !isTransferActive {
                     transferProgressModel.clear()
                 }
+                triggerQueuedInlineRenameRestartIfPossible()
             }
 
             do {
@@ -1514,7 +1942,10 @@ final class SessionViewModel: ObservableObject {
                     await ftpClient.disconnect()
                     resetRemoteSessionState()
                 }
-                if isConnected, connectedProfileID == nil {
+                let hasActiveConnection = await ftpClient.hasActiveConnection()
+                if isConnected, !hasActiveConnection {
+                    resetRemoteSessionState()
+                } else if isConnected, connectedProfileID == nil {
                     isConnected = false
                 }
                 isTransferActive = false
@@ -1554,9 +1985,34 @@ final class SessionViewModel: ObservableObject {
     }
 
     private func present(_ error: Error) {
+        queuedInlineRenameRestart = false
         let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         errorMessage = message
         statusMessage = message
+    }
+
+    private var hasPendingRenameSelectionTransition: Bool {
+        switch focusedPane {
+        case .local:
+            return pendingLocalSelectionID != nil
+        case .remote:
+            return pendingRemoteSelectionID != nil
+        }
+    }
+
+    private func triggerQueuedInlineRenameRestartIfPossible() {
+        guard queuedInlineRenameRestart,
+              !isBusy,
+              !isInlineRenaming,
+              canRenameFocusedSelection else {
+            return
+        }
+
+        queuedInlineRenameRestart = false
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            self.renameFocusedSelection()
+        }
     }
 
     private func resetRemoteSessionState() {
@@ -1564,9 +2020,15 @@ final class SessionViewModel: ObservableObject {
         isConnected = false
         remoteItems = []
         remoteRows = []
+        remoteDirectorySnapshot = nil
         remoteSnapshot = nil
         remoteCurrentPath = "/"
         selectedRemoteItemIDs = []
+        remoteSelectionAnchorID = nil
+        pendingRemoteSelectionID = nil
+        if inlineRenameSession?.pane == .remote {
+            inlineRenameSession = nil
+        }
         isTransferActive = false
         transferProgressModel.clear()
     }
@@ -1685,17 +2147,56 @@ final class SessionViewModel: ObservableObject {
             )
             profiles = syncedProfiles
 
-            if let previousSelectedProfileID,
-               syncedProfiles.contains(where: { $0.id == previousSelectedProfileID }) {
-                selectedProfileID = previousSelectedProfileID
-            } else {
-                selectedProfileID = syncedProfiles.first?.id
-            }
+            selectedProfileID = preferredSavedSiteSelection(
+                in: syncedProfiles,
+                currentSelection: previousSelectedProfileID
+            )
+            clearLastConnectedProfileIfMissing(in: syncedProfiles)
 
             restoreLocalRootForCurrentProfile()
         } catch {
             present(error)
         }
+    }
+
+    private var lastConnectedProfileID: UUID? {
+        guard let rawValue = userDefaults.string(forKey: Self.lastConnectedProfileIDStorageKey) else {
+            return nil
+        }
+        return UUID(uuidString: rawValue)
+    }
+
+    private func persistLastConnectedProfileID(_ profileID: UUID?) {
+        if let profileID {
+            userDefaults.set(profileID.uuidString, forKey: Self.lastConnectedProfileIDStorageKey)
+        } else {
+            userDefaults.removeObject(forKey: Self.lastConnectedProfileIDStorageKey)
+        }
+    }
+
+    private func preferredSavedSiteSelection(
+        in profiles: [ConnectionProfile],
+        currentSelection: UUID?
+    ) -> UUID? {
+        if let currentSelection,
+           profiles.contains(where: { $0.id == currentSelection }) {
+            return currentSelection
+        }
+
+        if let lastConnectedProfileID,
+           profiles.contains(where: { $0.id == lastConnectedProfileID }) {
+            return lastConnectedProfileID
+        }
+
+        return profiles.first?.id
+    }
+
+    private func clearLastConnectedProfileIfMissing(in profiles: [ConnectionProfile]) {
+        guard let lastConnectedProfileID,
+              !profiles.contains(where: { $0.id == lastConnectedProfileID }) else {
+            return
+        }
+        persistLastConnectedProfileID(nil)
     }
 
     private static func uniqueStandardizedURLs(_ urls: [URL]) -> [URL] {

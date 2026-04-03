@@ -5,6 +5,7 @@
 //  Created by Minh Nguyen on 21/3/26.
 //
 
+import AppKit
 import SwiftUI
 
 enum AppAppearance: String, CaseIterable, Identifiable {
@@ -68,17 +69,17 @@ struct XConnectFTPApp: App {
         Window("About XConnectFTP".localized, id: AppSupportWindowID.about) {
             AboutWindowView()
                 .preferredColorScheme(appColorScheme)
+                .windowRestorationDisabled()
         }
         .environment(\.locale, appLocale)
-        .restorationBehavior(.disabled)
         .windowResizability(.contentSize)
 
         Window("Help".localized, id: AppSupportWindowID.help) {
             HelpWindowView()
                 .preferredColorScheme(appColorScheme)
+                .windowRestorationDisabled()
         }
         .environment(\.locale, appLocale)
-        .restorationBehavior(.disabled)
         .windowResizability(.contentSize)
 
         Settings {
@@ -87,5 +88,29 @@ struct XConnectFTPApp: App {
                 .preferredColorScheme(appColorScheme)
         }
         .environment(\.locale, appLocale)
+    }
+}
+
+private extension View {
+    func windowRestorationDisabled() -> some View {
+        background(WindowRestorationConfigurator())
+    }
+}
+
+private struct WindowRestorationConfigurator: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        configure(view)
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        configure(nsView)
+    }
+
+    private func configure(_ view: NSView) {
+        DispatchQueue.main.async {
+            view.window?.isRestorable = false
+        }
     }
 }

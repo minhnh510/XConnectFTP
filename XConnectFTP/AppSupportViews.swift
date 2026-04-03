@@ -29,8 +29,25 @@ enum AppIconProvider {
     }
 }
 
+struct BrowserCommandActions {
+    let handleReturn: () -> Void
+    let canHandleReturn: Bool
+}
+
+private struct BrowserCommandActionsKey: FocusedValueKey {
+    typealias Value = BrowserCommandActions
+}
+
+extension FocusedValues {
+    var browserCommandActions: BrowserCommandActions? {
+        get { self[BrowserCommandActionsKey.self] }
+        set { self[BrowserCommandActionsKey.self] = newValue }
+    }
+}
+
 struct AppSupportCommands: Commands {
     @Environment(\.openWindow) private var openWindow
+    @FocusedValue(\.browserCommandActions) private var browserCommandActions
 
     var body: some Commands {
         CommandGroup(replacing: .appInfo) {
@@ -48,6 +65,14 @@ struct AppSupportCommands: Commands {
                 Label("Help".localized, systemImage: "questionmark.circle")
             }
             .keyboardShortcut("/", modifiers: .command)
+        }
+
+        CommandGroup(after: .pasteboard) {
+            Button("Rename".localized) {
+                browserCommandActions?.handleReturn()
+            }
+            .keyboardShortcut(.return, modifiers: [])
+            .disabled(!(browserCommandActions?.canHandleReturn ?? false))
         }
     }
 }

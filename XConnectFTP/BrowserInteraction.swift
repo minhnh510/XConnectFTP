@@ -89,13 +89,11 @@ struct BrowserTransferItem: Identifiable, Codable, Hashable, Transferable, Senda
         FileRepresentation(exportedContentType: .folder) { item in
             try await item.exportTransferredFile()
         }
-        .suggestedFileName { $0.name }
         .exportingCondition { $0.isDirectory }
 
         FileRepresentation(exportedContentType: .item) { item in
             try await item.exportTransferredFile()
         }
-        .suggestedFileName { $0.name }
         .exportingCondition { !$0.isDirectory }
     }
 

@@ -66,6 +66,13 @@ final class CoreParsingTests: XCTestCase {
         XCTAssertEqual(epsv?.port, 32123)
     }
 
+    func testFTPHostNormalizationAndPassivePreference() {
+        XCTAssertEqual(FTPHost.connectionHost(for: " ftp.example.com "), "ftp.example.com")
+        XCTAssertEqual(FTPHost.connectionHost(for: "[2001:db8::25]"), "2001:db8::25")
+        XCTAssertFalse(FTPHost.prefersExtendedPassive(for: "ftp.example.com"))
+        XCTAssertTrue(FTPHost.prefersExtendedPassive(for: "[2001:db8::25]"))
+    }
+
     func testMLSDParsingReturnsDirectoryAndFile() {
         let listing = """
         type=dir;modify=20260320101010; documents

@@ -67,7 +67,9 @@
 "Name" = "Name";
 "Size" = "Size";
 "Modified" = "Modified";
+"Search" = "Search";
 "Open" = "Open";
+"Open in Finder" = "Open in Finder";
 "Copy" = "Copy";
 "Paste" = "Paste";
 "New Site" = "New Site";
@@ -110,9 +112,12 @@
 "The server returned an invalid reply: %@" = "The server returned an invalid reply: %@";
 "The server returned code %d: %@" = "The server returned code %1$d: %2$@";
 "The server did not provide a passive mode endpoint." = "The server did not provide a passive mode endpoint.";
+"The FTP connection was closed by the server." = "The FTP connection was closed by the server.";
+"The FTP connection was interrupted and XConnectFTP could not reconnect automatically: %@" = "The FTP connection was interrupted and XConnectFTP could not reconnect automatically: %@";
 "The FTPS server requires TLS session reuse for data connections when using PROT P. The current version of XConnectFTP does not support this FTPS mode. Disable TLS session resumption on the server or use a different protocol or server." = "The FTPS server requires TLS session reuse for data connections when using PROT P. The current version of XConnectFTP does not support this FTPS mode. Disable TLS session resumption on the server or use a different protocol or server.";
 "The FTPS connection was canceled because the certificate was not accepted." = "The FTPS connection was canceled because the certificate was not accepted.";
 "The operation was canceled." = "The operation was canceled.";
+"The FTP operation timed out while waiting for the server." = "The FTP operation timed out while waiting for the server.";
 "Transfer verification failed: file size mismatch (%lld != %lld)." = "Transfer verification failed: file size mismatch (%1$lld != %2$lld).";
 "Transfer verification failed: %@ checksum does not match." = "Transfer verification failed: %1$@ checksum does not match.";
 "Could not read the local file to verify the transfer." = "Could not read the local file to verify the transfer.";
@@ -196,6 +201,8 @@
 "Processed %lld local item(s)." = "Processed %lld local item(s).";
 "Uploading from Finder to remote..." = "Uploading from Finder to remote...";
 "Uploaded %lld item(s) from Finder." = "Uploaded %lld item(s) from Finder.";
+"Opened %@ in Finder." = "Opened %@ in Finder.";
+"Opened %lld items in Finder." = "Opened %lld items in Finder.";
 "Duplicating local items..." = "Duplicating local items...";
 "Duplicated %@." = "Duplicated %@.";
 "Duplicated %lld items." = "Duplicated %lld items.";

@@ -141,7 +141,102 @@ struct LocalItem: Identifiable, Hashable, Sendable {
     var id: String { url.path }
 }
 
-struct LocalBrowserRowModel: Identifiable, Hashable, Sendable {
+protocol BrowserSortableRow: Identifiable, Hashable, Sendable where ID == String {
+    var sortName: String { get }
+    var sortSize: Int64? { get }
+    var sortModifiedAt: Date? { get }
+    var isDirectory: Bool { get }
+}
+
+struct BrowserRowComparator<RowValue: BrowserSortableRow>: SortComparator, Equatable, Sendable {
+    enum Field: String, CaseIterable, Sendable {
+        case name
+        case size
+        case modified
+    }
+
+    var field: Field
+    var order: SortOrder = .forward
+
+    init(_ field: Field, order: SortOrder = .forward) {
+        self.field = field
+        self.order = order
+    }
+
+    func compare(_ lhs: RowValue, _ rhs: RowValue) -> ComparisonResult {
+        if lhs.isDirectory != rhs.isDirectory {
+            return lhs.isDirectory ? .orderedAscending : .orderedDescending
+        }
+
+        let fieldResult: ComparisonResult
+        switch field {
+        case .name:
+            fieldResult = compareStrings(lhs.sortName, rhs.sortName, using: order)
+        case .size:
+            fieldResult = compareOptionalValues(lhs.sortSize, rhs.sortSize, using: order)
+        case .modified:
+            fieldResult = compareOptionalValues(lhs.sortModifiedAt, rhs.sortModifiedAt, using: order)
+        }
+
+        if fieldResult != .orderedSame {
+            return fieldResult
+        }
+
+        let nameFallback = compareStrings(lhs.sortName, rhs.sortName, using: .forward)
+        if nameFallback != .orderedSame {
+            return nameFallback
+        }
+
+        return compareStrings(lhs.id, rhs.id, using: .forward)
+    }
+
+    private func compareStrings(_ lhs: String, _ rhs: String, using order: SortOrder) -> ComparisonResult {
+        let result = lhs.localizedStandardCompare(rhs)
+        return order == .forward ? result : result.reversed
+    }
+
+    private func compareOptionalValues<Value: Comparable>(
+        _ lhs: Value?,
+        _ rhs: Value?,
+        using order: SortOrder
+    ) -> ComparisonResult {
+        switch (lhs, rhs) {
+        case let (lhs?, rhs?):
+            let result: ComparisonResult
+            if lhs < rhs {
+                result = .orderedAscending
+            } else if lhs > rhs {
+                result = .orderedDescending
+            } else {
+                result = .orderedSame
+            }
+            return order == .forward ? result : result.reversed
+        case (nil, nil):
+            return .orderedSame
+        case (nil, _?):
+            return .orderedDescending
+        case (_?, nil):
+            return .orderedAscending
+        }
+    }
+}
+
+enum BrowserSearchMatcher {
+    static func matches(_ candidate: String, query: String) -> Bool {
+        let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedQuery.isEmpty else {
+            return true
+        }
+
+        return normalized(candidate).contains(normalized(trimmedQuery))
+    }
+
+    private static func normalized(_ value: String) -> String {
+        value.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+    }
+}
+
+struct LocalBrowserRowModel: BrowserSortableRow {
     let item: LocalItem
     let name: String
     let sizeText: String
@@ -158,9 +253,12 @@ struct LocalBrowserRowModel: Identifiable, Hashable, Sendable {
 
     var id: LocalItem.ID { item.id }
     var isDirectory: Bool { item.isDirectory }
+    var sortName: String { name }
+    var sortSize: Int64? { item.size }
+    var sortModifiedAt: Date? { item.modifiedAt }
 }
 
-struct RemoteBrowserRowModel: Identifiable, Hashable, Sendable {
+struct RemoteBrowserRowModel: BrowserSortableRow {
     let item: RemoteItem
     let name: String
     let sizeText: String
@@ -177,6 +275,9 @@ struct RemoteBrowserRowModel: Identifiable, Hashable, Sendable {
 
     var id: RemoteItem.ID { item.id }
     var isDirectory: Bool { item.isDirectory }
+    var sortName: String { name }
+    var sortSize: Int64? { item.size }
+    var sortModifiedAt: Date? { item.modifiedAt }
 }
 
 struct DirectoryDiff<ID: Hashable & Sendable>: Sendable, Equatable {
@@ -279,5 +380,18 @@ private enum BrowserDisplayFormatter {
     static func modifiedDate(_ date: Date?) -> String {
         guard let date else { return "—" }
         return date.formatted(date: .abbreviated, time: .shortened)
+    }
+}
+
+private extension ComparisonResult {
+    var reversed: Self {
+        switch self {
+        case .orderedAscending:
+            return .orderedDescending
+        case .orderedDescending:
+            return .orderedAscending
+        case .orderedSame:
+            return .orderedSame
+        }
     }
 }
