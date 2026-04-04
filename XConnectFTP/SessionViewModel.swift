@@ -1479,6 +1479,18 @@ final class SessionViewModel: ObservableObject {
         remoteSelectionAnchorID = item.id
     }
 
+    func prepareRemoteTransferSelection(for item: RemoteItem) {
+        focusedPane = .remote
+
+        if selectedRemoteItemIDs.contains(item.id), !selectedRemoteItemIDs.isEmpty {
+            remoteSelectionAnchorID = item.id
+            return
+        }
+
+        selectedRemoteItemIDs = [item.id]
+        remoteSelectionAnchorID = item.id
+    }
+
     func selectOnlyRemoteItem(_ item: RemoteItem) {
         focusedPane = .remote
         selectedRemoteItemIDs = [item.id]

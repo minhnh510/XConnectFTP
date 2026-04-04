@@ -67,6 +67,21 @@ SwiftPM validation tests:
 swift test
 ```
 
+## Version Bump
+
+Use the version bump helper before creating a new App Store or release build:
+
+```bash
+scripts/bump-version.sh 1.0.3
+```
+
+This updates `MARKETING_VERSION` and automatically increments `CURRENT_PROJECT_VERSION`.
+You can also set both explicitly:
+
+```bash
+scripts/bump-version.sh 1.0.3 1024
+```
+
 ## Automated GitHub Releases
 
 This repo includes a GitHub Actions workflow at `.github/workflows/release-macos.yml`.

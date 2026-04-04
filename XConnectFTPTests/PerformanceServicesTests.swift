@@ -207,6 +207,20 @@ final class PerformanceServicesTests: XCTestCase {
         }
     }
 
+    func testLocalDirectoryServiceIncludesHiddenDotfiles() async throws {
+        try await withTemporaryDirectory { directoryURL in
+            try Data("*".utf8).write(to: directoryURL.appendingPathComponent(".gitignore"))
+            try Data("deny from all".utf8).write(to: directoryURL.appendingPathComponent(".htaccess"))
+
+            let service = LocalDirectoryService()
+            let items = try await service.loadDirectory(at: directoryURL, forceRefresh: true)
+            let names = items.map(\.name)
+
+            XCTAssertTrue(names.contains(".gitignore"))
+            XCTAssertTrue(names.contains(".htaccess"))
+        }
+    }
+
     func testLocalDirectoryServiceLoadSnapshotBuildsRowsAndDiff() async throws {
         try await withTemporaryDirectory { directoryURL in
             try Data("one".utf8).write(to: directoryURL.appendingPathComponent("one.txt"))

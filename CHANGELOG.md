@@ -12,12 +12,22 @@ This changelog starts from the current repository state. The project is currentl
 - Sortable `Name`, `Size`, and `Modified` columns for both browser tables.
 - Validation tests covering browser search matching and row sorting behavior.
 - Repo guidance in `AGENTS.md` for browser search/sort hotspots and table-state guardrails.
+- Better connection feedback when connecting or switching saved sites, including inline loading indicators for the active site.
+- Per-file progress details while downloading remote folders, plus a transfer cancel action directly in the footer.
 
 ### Changed
 
 - Browser table display state now rebuilds from raw local and remote directory snapshots so filtering and sorting stay aligned with selection, rename, refresh, and drag/drop flows.
 - Browser row sorting now uses shared comparator rules that keep folders grouped before files and place unknown `Size` and `Modified` values last.
 - Added localized `Search` strings for both English and Vietnamese.
+- Connecting to a different saved site now automatically disconnects the current site and switches to the newly selected one.
+- The local browser now shows hidden dotfiles such as `.gitignore` and `.htaccess`.
+- Remote context-menu transfer actions now preserve multi-selection for batch download, copy, and delete flows.
+
+### Fixed
+
+- Fixed remote folder downloads getting stuck when servers include `.` or `..` directory entries in listings.
+- Fixed misleading connection UI states where the app could already be connected while the header still showed a connecting indicator.
 
 ## Earlier Repository Milestones
 

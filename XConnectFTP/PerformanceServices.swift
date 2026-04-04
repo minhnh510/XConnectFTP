@@ -406,7 +406,7 @@ actor LocalDirectoryService {
         let urls = try fileManager.contentsOfDirectory(
             at: url,
             includingPropertiesForKeys: Array(resourceKeys),
-            options: [.skipsHiddenFiles, .skipsPackageDescendants]
+            options: [.skipsPackageDescendants]
         )
 
         let items = urls.compactMap { fileURL -> LocalItem? in

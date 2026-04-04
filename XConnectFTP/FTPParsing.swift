@@ -200,7 +200,7 @@ enum FTPDirectoryParser {
 
         let factsSegment = trimmedLine[..<spaceIndex]
         let name = trimmedLine[trimmedLine.index(after: spaceIndex)...].trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty, name != "." else {
+        guard !name.isEmpty, name != ".", name != ".." else {
             return nil
         }
 
@@ -238,8 +238,12 @@ enum FTPDirectoryParser {
             return nil
         }
 
+        if typeValue.contains("cdir") || typeValue.contains("pdir") {
+            return nil
+        }
+
         let kind: RemoteItemKind
-        if typeValue.contains("dir") || typeValue.contains("cdir") || typeValue.contains("pdir") {
+        if typeValue.contains("dir") {
             kind = .directory
         } else if typeValue.contains("os.unix=slink") || typeValue.contains("slink") {
             kind = .symbolicLink
@@ -260,7 +264,7 @@ enum FTPDirectoryParser {
         let permissions = parts[0]
         let nameComponent = String(parts[8])
         let name = nameComponent.components(separatedBy: " -> ").first ?? nameComponent
-        guard !name.isEmpty, name != "." else {
+        guard !name.isEmpty, name != ".", name != ".." else {
             return nil
         }
 

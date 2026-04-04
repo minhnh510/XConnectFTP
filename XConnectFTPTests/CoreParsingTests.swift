@@ -89,6 +89,19 @@ final class CoreParsingTests: XCTestCase {
         XCTAssertEqual(items[1].path, "/report.txt")
     }
 
+    func testMLSDParsingSkipsCurrentAndParentDirectoryEntries() {
+        let listing = """
+        type=cdir;modify=20260320101010; .
+        type=pdir;modify=20260320101010; ..
+        type=dir;modify=20260320101010; documents
+        """
+
+        let items = FTPDirectoryParser.parse(listing, directory: "/remote", format: .mlsd)
+
+        XCTAssertEqual(items.map(\.name), ["documents"])
+        XCTAssertEqual(items[0].path, "/remote/documents")
+    }
+
     func testUnixListParsingReturnsExpectedKinds() {
         let listing = """
         drwxr-xr-x  3 owner  group      96 Mar 21 10:15 uploads
@@ -102,5 +115,18 @@ final class CoreParsingTests: XCTestCase {
         XCTAssertTrue(items[0].isDirectory)
         XCTAssertEqual(items[1].path, "/remote/notes.txt")
         XCTAssertEqual(items[1].size, 4096)
+    }
+
+    func testUnixListParsingSkipsDotEntries() {
+        let listing = """
+        drwxr-xr-x  3 owner  group      96 Mar 21 10:15 .
+        drwxr-xr-x  3 owner  group      96 Mar 21 10:15 ..
+        drwxr-xr-x  3 owner  group      96 Mar 21 10:15 uploads
+        """
+
+        let items = FTPDirectoryParser.parse(listing, directory: "/remote", format: .unixList)
+
+        XCTAssertEqual(items.map(\.name), ["uploads"])
+        XCTAssertEqual(items[0].path, "/remote/uploads")
     }
 }

@@ -384,13 +384,26 @@ actor TransferCoordinator {
             status("Downloading %lld/%lld: %@".localized(Int64(batchIndex), Int64(batchTotal), item.name))
             let destinationDirectory = localDirectory.appendingPathComponent(item.name, isDirectory: true)
             try FileManager.default.createDirectory(at: destinationDirectory, withIntermediateDirectories: true)
-            try await downloadDirectoryContents(remoteItem: item, to: destinationDirectory)
+            try await downloadDirectoryContents(
+                remoteItem: item,
+                to: destinationDirectory,
+                batchIndex: batchIndex,
+                batchTotal: batchTotal,
+                displayPath: item.name,
+                progress: progress,
+                status: status
+            )
             return
         }
 
         status("Downloading %lld/%lld: %@".localized(Int64(batchIndex), Int64(batchTotal), item.name))
         _ = try await ftpClient.download(remotePath: item.path, to: localDirectory) { snapshot in
-            progress(Self.decorate(snapshot, itemIndex: batchIndex, totalItems: batchTotal))
+            progress(Self.decorate(
+                snapshot,
+                itemIndex: batchIndex,
+                totalItems: batchTotal,
+                displayName: item.name
+            ))
         }
     }
 
@@ -398,12 +411,58 @@ actor TransferCoordinator {
         let children = try await ftpClient.list(path: remoteItem.path, forceRefresh: true)
         for child in children {
             try Task.checkCancellation()
+            guard child.name != ".", child.name != ".." else {
+                continue
+            }
             if child.isDirectory {
                 let childDirectory = localDirectory.appendingPathComponent(child.name, isDirectory: true)
                 try FileManager.default.createDirectory(at: childDirectory, withIntermediateDirectories: true)
                 try await downloadDirectoryContents(remoteItem: child, to: childDirectory)
             } else {
                 _ = try await ftpClient.download(remotePath: child.path, to: localDirectory) { _ in }
+            }
+        }
+    }
+
+    private func downloadDirectoryContents(
+        remoteItem: RemoteItem,
+        to localDirectory: URL,
+        batchIndex: Int,
+        batchTotal: Int,
+        displayPath: String,
+        progress: @escaping @Sendable (TransferSnapshot) -> Void,
+        status: @escaping @Sendable (String) -> Void
+    ) async throws {
+        let children = try await ftpClient.list(path: remoteItem.path, forceRefresh: true)
+        for child in children {
+            try Task.checkCancellation()
+            guard child.name != ".", child.name != ".." else {
+                continue
+            }
+            let childDisplayPath = "\(displayPath)/\(child.name)"
+
+            if child.isDirectory {
+                let childDirectory = localDirectory.appendingPathComponent(child.name, isDirectory: true)
+                try FileManager.default.createDirectory(at: childDirectory, withIntermediateDirectories: true)
+                try await downloadDirectoryContents(
+                    remoteItem: child,
+                    to: childDirectory,
+                    batchIndex: batchIndex,
+                    batchTotal: batchTotal,
+                    displayPath: childDisplayPath,
+                    progress: progress,
+                    status: status
+                )
+            } else {
+                status("Downloading %lld/%lld: %@".localized(Int64(batchIndex), Int64(batchTotal), childDisplayPath))
+                _ = try await ftpClient.download(remotePath: child.path, to: localDirectory) { snapshot in
+                    progress(Self.decorate(
+                        snapshot,
+                        itemIndex: batchIndex,
+                        totalItems: batchTotal,
+                        displayName: childDisplayPath
+                    ))
+                }
             }
         }
     }
@@ -426,7 +485,7 @@ actor TransferCoordinator {
         let urls = try FileManager.default.contentsOfDirectory(
             at: directoryURL,
             includingPropertiesForKeys: [.isDirectoryKey, .nameKey],
-            options: [.skipsHiddenFiles, .skipsPackageDescendants]
+            options: [.skipsPackageDescendants]
         )
 
         return urls.sorted { lhs, rhs in
@@ -475,7 +534,7 @@ actor TransferCoordinator {
         let urls = try FileManager.default.contentsOfDirectory(
             at: directoryURL,
             includingPropertiesForKeys: [.nameKey],
-            options: [.skipsHiddenFiles, .skipsPackageDescendants]
+            options: [.skipsPackageDescendants]
         )
         return normalizedNames(from: urls.map(\.lastPathComponent))
     }
@@ -511,10 +570,11 @@ actor TransferCoordinator {
     private static func decorate(
         _ snapshot: TransferSnapshot,
         itemIndex: Int,
-        totalItems: Int
+        totalItems: Int,
+        displayName: String? = nil
     ) -> TransferSnapshot {
         TransferSnapshot(
-            title: "[\(itemIndex)/\(totalItems)] \(snapshot.title)",
+            title: "[\(itemIndex)/\(totalItems)] \(displayName.map { "Downloading %@".localized($0) } ?? snapshot.title)",
             transferredBytes: snapshot.transferredBytes,
             totalBytes: snapshot.totalBytes
         )

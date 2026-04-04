@@ -436,8 +436,10 @@ struct ContentView: View {
         TransferFooterView(
             isConnected: viewModel.isConnected,
             isBusy: viewModel.isBusy,
+            isTransferActive: viewModel.isTransferActive,
             statusMessage: viewModel.statusMessage,
-            progressModel: viewModel.transferProgressModel
+            progressModel: viewModel.transferProgressModel,
+            onCancelTransfer: viewModel.cancelTransfer
         )
     }
 }
@@ -870,7 +872,7 @@ private struct RemoteTableNameCell: View {
                 .disabled(!item.isDirectory)
 
                 Button("Copy".localized) {
-                    viewModel.selectOnlyRemoteItem(item)
+                    viewModel.prepareRemoteTransferSelection(for: item)
                     viewModel.copyFocusedSelection()
                 }
                 .disabled(viewModel.isBusy || !viewModel.isConnected)
@@ -881,7 +883,7 @@ private struct RemoteTableNameCell: View {
                 .disabled(!viewModel.canPaste(into: .remote))
 
                 Button("Download".localized) {
-                    viewModel.selectOnlyRemoteItem(item)
+                    viewModel.prepareRemoteTransferSelection(for: item)
                     viewModel.downloadSelectedRemoteItems()
                 }
                 .disabled(viewModel.isBusy || !viewModel.isConnected)
@@ -893,7 +895,7 @@ private struct RemoteTableNameCell: View {
                 .disabled(viewModel.isBusy || !viewModel.isConnected)
 
                 Button("Delete".localized, role: .destructive) {
-                    viewModel.selectOnlyRemoteItem(item)
+                    viewModel.prepareRemoteTransferSelection(for: item)
                     viewModel.deleteFocusedSelection()
                 }
                 .disabled(viewModel.isBusy || !viewModel.isConnected)
@@ -1603,8 +1605,10 @@ private struct BrowserWindowKeyFallback: NSViewRepresentable {
 private struct TransferFooterView: View {
     let isConnected: Bool
     let isBusy: Bool
+    let isTransferActive: Bool
     let statusMessage: String
     @ObservedObject var progressModel: TransferProgressModel
+    let onCancelTransfer: () -> Void
 
     private static let byteCountFormatter: ByteCountFormatter = {
         let formatter = ByteCountFormatter()
@@ -1622,6 +1626,11 @@ private struct TransferFooterView: View {
                 Text(statusMessage)
                     .font(.callout)
                 Spacer()
+                if isTransferActive {
+                    Button("Cancel Transfer".localized, role: .destructive, action: onCancelTransfer)
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                }
                 if isBusy {
                     ProgressView()
                         .controlSize(.small)
