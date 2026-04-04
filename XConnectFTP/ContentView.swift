@@ -126,6 +126,7 @@ struct ContentView: View {
                     SavedSiteRow(
                         profile: profile,
                         isConnected: viewModel.isProfileConnected(profile),
+                        isConnecting: viewModel.isProfileConnecting(profile),
                         onEdit: { viewModel.openEditSiteEditor(for: profile) },
                         onDelete: { viewModel.deleteProfile(profile) }
                     )
@@ -213,8 +214,16 @@ struct ContentView: View {
                     }
                     .disabled(!viewModel.canChooseLocalRoot)
 
-                    Button("Connect".localized) {
+                    Button {
                         viewModel.connect()
+                    } label: {
+                        HStack(spacing: 8) {
+                            Text("Connect".localized)
+                            if viewModel.isConnecting {
+                                ProgressView()
+                                    .controlSize(.small)
+                            }
+                        }
                     }
                     .disabled(!viewModel.canConnect)
 
@@ -223,6 +232,24 @@ struct ContentView: View {
                     }
                     .disabled(!viewModel.canDisconnect)
                 }
+            }
+
+            if let progressMessage = viewModel.actionBarProgressMessage {
+                HStack(spacing: 10) {
+                    ProgressView()
+                        .controlSize(.small)
+
+                    Text(progressMessage)
+                        .font(.caption.weight(.medium))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .background(Color.accentColor.opacity(0.10))
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
             }
 
             if let warning = viewModel.insecureFTPWarningMessage {
@@ -1023,6 +1050,7 @@ private struct PaneUnavailableView: View {
 private struct SavedSiteRow: View {
     let profile: ConnectionProfile
     let isConnected: Bool
+    let isConnecting: Bool
     let onEdit: () -> Void
     let onDelete: () -> Void
 
@@ -1033,7 +1061,10 @@ private struct SavedSiteRow: View {
                     Text(profile.name)
                         .font(.headline)
 
-                    if isConnected {
+                    if isConnecting {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else if isConnected {
                         Image(systemName: "checkmark.circle.fill")
                             .font(.caption)
                             .foregroundStyle(.green)

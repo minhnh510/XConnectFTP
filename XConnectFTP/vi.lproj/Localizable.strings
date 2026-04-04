@@ -144,6 +144,7 @@
 "Are you sure you want to delete the saved site %@?" = "Bạn có chắc muốn xóa site đã lưu %@?";
 "Deleted site %@." = "Đã xóa site %@.";
 "Connecting to %@..." = "Đang kết nối tới %@...";
+"Switching from %@ to %@..." = "Đang chuyển từ %@ sang %@...";
 "Disconnecting..." = "Đang ngắt kết nối...";
 "Choose Folder" = "Chọn thư mục";
 "Choose the local root folder to browse inside the app." = "Chọn thư mục gốc local để duyệt trong ứng dụng.";

@@ -144,6 +144,7 @@
 "Are you sure you want to delete the saved site %@?" = "Are you sure you want to delete the saved site %@?";
 "Deleted site %@." = "Deleted site %@.";
 "Connecting to %@..." = "Connecting to %@...";
+"Switching from %@ to %@..." = "Switching from %@ to %@...";
 "Disconnecting..." = "Disconnecting...";
 "Choose Folder" = "Choose Folder";
 "Choose the local root folder to browse inside the app." = "Choose the local root folder to browse inside the app.";

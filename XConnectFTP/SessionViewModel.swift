@@ -174,6 +174,11 @@ private struct InlineRenameSession {
     }
 }
 
+private struct CachedRemoteBrowserState {
+    let path: String
+    let snapshot: RemoteBrowserSnapshot
+}
+
 @MainActor
 final class SessionViewModel: ObservableObject {
     private static let lastConnectedProfileIDStorageKey = "lastConnectedProfileID"
@@ -213,6 +218,9 @@ final class SessionViewModel: ObservableObject {
     @Published var isConnected = false
     @Published var isBusy = false
     @Published var isTransferActive = false
+    @Published private(set) var connectingProfileID: ConnectionProfile.ID?
+    @Published private(set) var connectionProgressMessage: String?
+    @Published private(set) var isRemoteDirectoryLoading = false
     @Published var isPresentingSiteEditor = false
     @Published var siteEditorDraft = ConnectionProfileDraft()
     @Published var errorMessage: String?
@@ -246,6 +254,7 @@ final class SessionViewModel: ObservableObject {
     private var pendingRemoteSelectionID: RemoteItem.ID?
     private var queuedInlineRenameRestart = false
     private var clipboardSnapshot: ClipboardSnapshot?
+    private var cachedRemoteBrowserStates: [ConnectionProfile.ID: CachedRemoteBrowserState] = [:]
 
     let transferProgressModel = TransferProgressModel()
 
@@ -325,7 +334,27 @@ final class SessionViewModel: ObservableObject {
     }
 
     var canConnect: Bool {
-        !isBusy && selectedProfile != nil && !isConnected
+        guard let selectedProfile else {
+            return false
+        }
+
+        return canConnect(profile: selectedProfile)
+    }
+
+    var isConnecting: Bool {
+        connectingProfileID != nil
+    }
+
+    var actionBarProgressMessage: String? {
+        if let connectionProgressMessage {
+            return connectionProgressMessage
+        }
+
+        if isRemoteDirectoryLoading {
+            return "Refreshing remote folder...".localized
+        }
+
+        return nil
     }
 
     var canCopy: Bool {
@@ -641,6 +670,7 @@ final class SessionViewModel: ObservableObject {
             do {
                 self.profiles = try self.connectionStore.delete(profile: profile)
                 self.bookmarkStore.clearRootBookmark(for: profile.id)
+                self.cachedRemoteBrowserStates.removeValue(forKey: profile.id)
                 if self.lastConnectedProfileID == profile.id {
                     self.persistLastConnectedProfileID(nil)
                 }
@@ -665,7 +695,26 @@ final class SessionViewModel: ObservableObject {
     func connect(to profile: ConnectionProfile) {
         guard canConnect(profile: profile) else { return }
         selectedProfileID = profile.id
-        runTask(status: "Connecting to %@...".localized(profile.host)) { viewModel in
+        let previousProfile = connectedProfile
+        let connectionStatus = previousProfile.map {
+            "Switching from %@ to %@...".localized($0.host, profile.host)
+        } ?? "Connecting to %@...".localized(profile.host)
+
+        runTask(status: connectionStatus) { viewModel in
+            viewModel.connectingProfileID = profile.id
+            viewModel.connectionProgressMessage = connectionStatus
+            defer {
+                viewModel.connectingProfileID = nil
+                viewModel.connectionProgressMessage = nil
+                viewModel.isRemoteDirectoryLoading = false
+            }
+
+            if viewModel.isConnected, viewModel.connectedProfileID != profile.id {
+                await viewModel.ftpClient.disconnect()
+                viewModel.resetRemoteSessionState()
+                viewModel.restoreLocalRootForCurrentProfile()
+            }
+
             await viewModel.transferCoordinator.sweepTemporaryArtifacts()
             let password = try viewModel.connectionStore.password(for: profile)
             let workingDirectory = try await viewModel.ftpClient.connect(profile: profile, password: password)
@@ -675,6 +724,14 @@ final class SessionViewModel: ObservableObject {
             viewModel.remoteCurrentPath = workingDirectory
             viewModel.restoreLocalRootForCurrentProfile()
             viewModel.statusMessage = viewModel.localizedConnectedStatusMessage(for: profile)
+            viewModel.connectingProfileID = nil
+            viewModel.connectionProgressMessage = nil
+
+            if let cachedSnapshot = viewModel.cachedRemoteSnapshot(for: profile.id, path: workingDirectory) {
+                viewModel.applyRemoteSnapshot(cachedSnapshot, isSameDirectory: false)
+            }
+
+            viewModel.isRemoteDirectoryLoading = true
             try await viewModel.refreshRemoteDirectory(path: workingDirectory, forceRefresh: true)
         }
     }
@@ -694,8 +751,8 @@ final class SessionViewModel: ObservableObject {
         disconnect()
     }
 
-    func canConnect(profile _: ConnectionProfile) -> Bool {
-        return !isBusy && !isConnected
+    func canConnect(profile: ConnectionProfile) -> Bool {
+        !isBusy && (!isConnected || connectedProfileID != profile.id)
     }
 
     func canDisconnect(profile: ConnectionProfile) -> Bool {
@@ -704,6 +761,10 @@ final class SessionViewModel: ObservableObject {
 
     func isProfileConnected(_ profile: ConnectionProfile) -> Bool {
         isConnected && connectedProfileID == profile.id
+    }
+
+    func isProfileConnecting(_ profile: ConnectionProfile) -> Bool {
+        connectingProfileID == profile.id
     }
 
     func chooseLocalRoot() {
@@ -1776,6 +1837,7 @@ final class SessionViewModel: ObservableObject {
         isSameDirectory: Bool
     ) {
         remoteDirectorySnapshot = snapshot
+        cacheCurrentRemoteSnapshot(snapshot)
         rebuildRemoteBrowserState(previousSelection: isSameDirectory ? selectedRemoteItemIDs : [])
     }
 
@@ -2016,6 +2078,9 @@ final class SessionViewModel: ObservableObject {
     }
 
     private func resetRemoteSessionState() {
+        connectingProfileID = nil
+        connectionProgressMessage = nil
+        isRemoteDirectoryLoading = false
         connectedProfileID = nil
         isConnected = false
         remoteItems = []
@@ -2031,6 +2096,26 @@ final class SessionViewModel: ObservableObject {
         }
         isTransferActive = false
         transferProgressModel.clear()
+    }
+
+    private func cacheCurrentRemoteSnapshot(_ snapshot: RemoteBrowserSnapshot) {
+        guard let connectedProfileID else {
+            return
+        }
+
+        cachedRemoteBrowserStates[connectedProfileID] = CachedRemoteBrowserState(
+            path: remoteCurrentPath,
+            snapshot: snapshot
+        )
+    }
+
+    private func cachedRemoteSnapshot(for profileID: UUID, path: String) -> RemoteBrowserSnapshot? {
+        guard let cachedState = cachedRemoteBrowserStates[profileID],
+              FTPPath.normalize(cachedState.path) == FTPPath.normalize(path) else {
+            return nil
+        }
+
+        return cachedState.snapshot
     }
 
     private func isInsideRoot(_ candidate: URL, root: URL) -> Bool {
