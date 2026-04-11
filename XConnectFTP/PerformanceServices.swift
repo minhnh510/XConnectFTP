@@ -623,6 +623,27 @@ struct DuplicateNameResolver {
         }
     }
 
+    static func newFolderName(
+        existingNames: Set<String>,
+        reservedNames: inout Set<String>
+    ) -> String {
+        let baseName = "New Folder".localized
+        if isAvailable(baseName, existingNames: existingNames, reservedNames: reservedNames) {
+            reserve(baseName, reservedNames: &reservedNames)
+            return baseName
+        }
+
+        var index = 2
+        while true {
+            let candidate = "New Folder %d".localized(index)
+            if isAvailable(candidate, existingNames: existingNames, reservedNames: reservedNames) {
+                reserve(candidate, reservedNames: &reservedNames)
+                return candidate
+            }
+            index += 1
+        }
+    }
+
     static func copyName(for originalName: String, isDirectory: Bool, copyIndex: Int) -> String {
         let suffix = copyIndex == 1
             ? " copy".localized

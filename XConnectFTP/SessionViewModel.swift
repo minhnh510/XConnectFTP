@@ -252,6 +252,7 @@ final class SessionViewModel: ObservableObject {
     private var remoteDirectorySnapshot: RemoteBrowserSnapshot?
     private var remoteSnapshot: RemoteBrowserSnapshot?
     private var pendingRemoteSelectionID: RemoteItem.ID?
+    private var pendingLocalInlineRenameID: LocalItem.ID?
     private var queuedInlineRenameRestart = false
     private var clipboardSnapshot: ClipboardSnapshot?
     private var cachedRemoteBrowserStates: [ConnectionProfile.ID: CachedRemoteBrowserState] = [:]
@@ -413,6 +414,18 @@ final class SessionViewModel: ObservableObject {
 
     var canDownload: Bool {
         isConnected && !isBusy && !selectedRemoteItems.isEmpty && localCurrentURL != nil
+    }
+
+    var canRefreshLocalDirectory: Bool {
+        !isBusy && localCurrentURL != nil
+    }
+
+    var canRefreshRemoteDirectory: Bool {
+        isConnected && !isBusy
+    }
+
+    var canCreateLocalFolder: Bool {
+        !isBusy && localCurrentURL != nil
     }
 
     var canRenameFocusedSelection: Bool {
@@ -810,6 +823,26 @@ final class SessionViewModel: ObservableObject {
         requestLocalDirectoryLoad(item.url)
     }
 
+    func refreshLocalDirectory() {
+        guard let currentURL = localCurrentURL?.standardizedFileURL,
+              canRefreshLocalDirectory else {
+            return
+        }
+
+        focusedPane = .local
+        statusMessage = "Refreshing local folder...".localized
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.invalidateLocalDirectories([currentURL])
+            self.requestLocalDirectoryLoad(
+                currentURL,
+                forceRefresh: true,
+                completionStatus: "Refreshed local folder.".localized
+            )
+        }
+    }
+
     func openLocalSelectionInFinder() {
         guard !isBusy else { return }
 
@@ -852,10 +885,11 @@ final class SessionViewModel: ObservableObject {
     }
 
     func refreshRemoteDirectory() {
-        guard isConnected else { return }
+        guard canRefreshRemoteDirectory else { return }
         focusedPane = .remote
         runTask(status: "Refreshing remote folder...".localized) { viewModel in
             try await viewModel.refreshRemoteDirectory(path: viewModel.remoteCurrentPath, forceRefresh: true)
+            viewModel.statusMessage = "Refreshed remote folder.".localized
         }
     }
 
@@ -921,6 +955,35 @@ final class SessionViewModel: ObservableObject {
             try await viewModel.ftpClient.createDirectory(named: folderName, in: viewModel.remoteCurrentPath)
             viewModel.statusMessage = "Created folder %@.".localized(folderName)
             try await viewModel.refreshRemoteDirectory(path: viewModel.remoteCurrentPath, forceRefresh: true)
+        }
+    }
+
+    func createLocalFolder() {
+        guard let currentURL = localCurrentURL?.standardizedFileURL else { return }
+
+        let folderName = suggestedLocalFolderName(in: currentURL)
+        let destinationURL = currentURL.appendingPathComponent(folderName, isDirectory: true).standardizedFileURL
+
+        focusedPane = .local
+        pendingLocalSelectionID = destinationURL.path
+        pendingLocalInlineRenameID = destinationURL.path
+
+        runTask(status: "Creating folder %@...".localized(folderName)) { viewModel in
+            do {
+                try FileManager.default.createDirectory(
+                    at: destinationURL,
+                    withIntermediateDirectories: false
+                )
+                await viewModel.invalidateLocalDirectories([currentURL])
+                viewModel.requestLocalDirectoryLoad(currentURL, forceRefresh: true)
+                viewModel.statusMessage = "Created folder %@.".localized(folderName)
+            } catch {
+                viewModel.pendingLocalSelectionID = nil
+                viewModel.pendingLocalInlineRenameID = nil
+                throw ValidationError(
+                    "Could not create the local folder %@: %@.".localized(folderName, error.localizedDescription)
+                )
+            }
         }
     }
 
@@ -1735,6 +1798,7 @@ final class SessionViewModel: ObservableObject {
         selectedLocalItemIDs = []
         localSelectionAnchorID = nil
         pendingLocalSelectionID = nil
+        pendingLocalInlineRenameID = nil
         if inlineRenameSession?.pane == .local {
             inlineRenameSession = nil
         }
@@ -1754,7 +1818,11 @@ final class SessionViewModel: ObservableObject {
         profiles = try connectionStore.saveMetadata(profile: updatedProfile)
     }
 
-    private func requestLocalDirectoryLoad(_ url: URL, forceRefresh: Bool = false) {
+    private func requestLocalDirectoryLoad(
+        _ url: URL,
+        forceRefresh: Bool = false,
+        completionStatus: String? = nil
+    ) {
         localLoadGeneration += 1
         let generation = localLoadGeneration
         let normalizedURL = url.standardizedFileURL
@@ -1767,6 +1835,7 @@ final class SessionViewModel: ObservableObject {
             selectedLocalItemIDs = []
             localSelectionAnchorID = nil
             pendingLocalSelectionID = nil
+            pendingLocalInlineRenameID = nil
             localItems = []
             localRows = []
             localDirectorySnapshot = nil
@@ -1791,6 +1860,11 @@ final class SessionViewModel: ObservableObject {
                         isSameDirectory: sameDirectory,
                         previousSelection: previousSelection
                     )
+                    if let completionStatus {
+                        self.statusMessage = completionStatus
+                    } else if self.statusMessage == "Refreshing local folder...".localized {
+                        self.statusMessage = "Refreshed local folder.".localized
+                    }
                 }
             } catch {
                 await MainActor.run {
@@ -1896,6 +1970,7 @@ final class SessionViewModel: ObservableObject {
         if let inlineRenameSession, inlineRenameSession.pane == .local, !validIDs.contains(inlineRenameSession.itemID) {
             self.inlineRenameSession = nil
         }
+        triggerPendingLocalInlineRenameIfPossible(validIDs: validIDs)
         triggerQueuedInlineRenameRestartIfPossible()
     }
 
@@ -1972,6 +2047,20 @@ final class SessionViewModel: ObservableObject {
         }
     }
 
+    private func suggestedLocalFolderName(in directoryURL: URL) -> String {
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: directoryURL.path))
+            ?? localDirectorySnapshot?.items.map(\.name)
+            ?? []
+        let existingNames = Set(names.map { name in
+            name.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+        })
+        var reservedNames = Set<String>()
+        return DuplicateNameResolver.newFolderName(
+            existingNames: existingNames,
+            reservedNames: &reservedNames
+        )
+    }
+
     private func refreshCurrentLocalDirectoryIfNeeded(affectedDirectories: [URL]) {
         guard let currentURL = localCurrentURL?.standardizedFileURL else {
             return
@@ -1980,6 +2069,28 @@ final class SessionViewModel: ObservableObject {
         let affectedPaths = Set(affectedDirectories.map { $0.standardizedFileURL.path })
         if affectedPaths.contains(currentURL.path) {
             requestLocalDirectoryLoad(currentURL, forceRefresh: true)
+        }
+    }
+
+    private func triggerPendingLocalInlineRenameIfPossible(validIDs: Set<LocalItem.ID>) {
+        guard let pendingLocalInlineRenameID else {
+            return
+        }
+
+        guard validIDs.contains(pendingLocalInlineRenameID) else {
+            self.pendingLocalInlineRenameID = nil
+            return
+        }
+
+        guard primarySelectedLocalItem?.id == pendingLocalInlineRenameID,
+              !isBusy,
+              !isInlineRenaming else {
+            return
+        }
+
+        self.pendingLocalInlineRenameID = nil
+        Task { @MainActor [weak self] in
+            self?.renameFocusedSelection()
         }
     }
 

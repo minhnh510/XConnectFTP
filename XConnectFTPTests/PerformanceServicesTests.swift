@@ -289,6 +289,25 @@ final class PerformanceServicesTests: XCTestCase {
         XCTAssertEqual(secondCopy, "docs copy 2")
     }
 
+    func testDuplicateNameResolverGeneratesFinderStyleNewFolderNames() {
+        var reservedNames = Set<String>()
+        let existingNames = Set(["New Folder", "New Folder 2"].map {
+            $0.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+        })
+
+        let newFolderName = DuplicateNameResolver.newFolderName(
+            existingNames: existingNames,
+            reservedNames: &reservedNames
+        )
+        let secondNewFolderName = DuplicateNameResolver.newFolderName(
+            existingNames: existingNames,
+            reservedNames: &reservedNames
+        )
+
+        XCTAssertEqual(newFolderName, "New Folder 3")
+        XCTAssertEqual(secondNewFolderName, "New Folder 4")
+    }
+
     private func withTemporaryDirectory(_ body: (URL) throws -> Void) throws {
         let directoryURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)

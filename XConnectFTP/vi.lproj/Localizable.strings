@@ -156,7 +156,10 @@
 "Choose a local root folder for this site to browse and upload/download." = "Chọn thư mục gốc local cho site này để duyệt và upload/download.";
 "Opening parent folder..." = "Đang mở thư mục cha...";
 "Opening %@..." = "Đang mở %@...";
+"Refreshing local folder..." = "Đang làm mới thư mục local...";
+"Refreshed local folder." = "Đã làm mới thư mục local.";
 "Refreshing remote folder..." = "Đang làm mới thư mục remote...";
+"Refreshed remote folder." = "Đã làm mới thư mục remote.";
 "Uploading %lld item(s)..." = "Đang upload %lld mục...";
 "Uploaded %@." = "Đã upload %@.";
 "Uploaded %lld items." = "Đã upload %lld mục.";
@@ -165,8 +168,10 @@
 "Downloaded %lld items." = "Đã download %lld mục.";
 "Create Remote Folder" = "Tạo thư mục remote";
 "Enter a name for the new folder in %@." = "Nhập tên cho thư mục mới trong %@.";
+"New Folder %d" = "Thư mục mới %d";
 "Creating folder %@..." = "Đang tạo thư mục %@...";
 "Created folder %@." = "Đã tạo thư mục %@.";
+"Could not create the local folder %@: %@." = "Không thể tạo thư mục local %1$@: %2$@.";
 "Copied %@." = "Đã sao chép %@.";
 "Copied %lld items." = "Đã sao chép %lld mục.";
 "Pasting local items..." = "Đang dán các mục local...";

@@ -165,6 +165,23 @@ enum FTPPath {
     }
 }
 
+enum RemoteLocalNameResolver {
+    static func localDestinationName(remotePath: String, fallbackName: String) -> String {
+        let leafName = FTPPath.name(from: remotePath)
+        if !leafName.isEmpty, leafName != "/", leafName != "." {
+            return leafName
+        }
+
+        let trimmedFallback = fallbackName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedFallback.isEmpty else {
+            return leafName
+        }
+
+        let fallbackLeafName = (trimmedFallback as NSString).lastPathComponent
+        return fallbackLeafName.isEmpty ? trimmedFallback : fallbackLeafName
+    }
+}
+
 enum FTPListingFormat {
     case mlsd
     case unixList

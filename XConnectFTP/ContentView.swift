@@ -269,11 +269,6 @@ struct ContentView: View {
             }
 
             HStack {
-                Button("Refresh".localized) {
-                    viewModel.refreshRemoteDirectory()
-                }
-                .disabled(!viewModel.isConnected || viewModel.isBusy)
-
                 Button("Upload".localized) {
                     viewModel.uploadSelectedLocalItems()
                 }
@@ -323,6 +318,10 @@ struct ContentView: View {
                 paneHeader(
                     path: currentURL.path,
                     searchText: $viewModel.localSearchText,
+                    onRefresh: viewModel.refreshLocalDirectory,
+                    canRefresh: viewModel.canRefreshLocalDirectory,
+                    onCreateFolder: viewModel.createLocalFolder,
+                    canCreateFolder: viewModel.canCreateLocalFolder,
                     onUp: viewModel.goToLocalParent,
                     canGoUp: viewModel.localRootURL != nil && currentURL != viewModel.localRootURL
                 )
@@ -370,6 +369,10 @@ struct ContentView: View {
                 paneHeader(
                     path: viewModel.remoteCurrentPath,
                     searchText: $viewModel.remoteSearchText,
+                    onRefresh: viewModel.refreshRemoteDirectory,
+                    canRefresh: viewModel.canRefreshRemoteDirectory,
+                    onCreateFolder: viewModel.createRemoteFolder,
+                    canCreateFolder: viewModel.isConnected && !viewModel.isBusy,
                     onUp: viewModel.goToRemoteParent,
                     canGoUp: viewModel.remoteCurrentPath != "/"
                 )
@@ -408,6 +411,10 @@ struct ContentView: View {
     private func paneHeader(
         path: String,
         searchText: Binding<String>,
+        onRefresh: @escaping () -> Void,
+        canRefresh: Bool,
+        onCreateFolder: @escaping () -> Void,
+        canCreateFolder: Bool,
         onUp: @escaping () -> Void,
         canGoUp: Bool
     ) -> some View {
@@ -418,6 +425,17 @@ struct ContentView: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
                 Spacer()
+                Button("New Folder".localized) {
+                    onCreateFolder()
+                }
+                .disabled(!canCreateFolder)
+                Button {
+                    onRefresh()
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .help("Refresh".localized)
+                .disabled(!canRefresh)
                 Button {
                     onUp()
                 } label: {
@@ -538,6 +556,16 @@ private struct LocalBrowserTable: View {
             }
             .disabled(!canOpenInFinder(effectiveIDs))
 
+            Button("Refresh".localized) {
+                viewModel.refreshLocalDirectory()
+            }
+            .disabled(!viewModel.canRefreshLocalDirectory)
+
+            Button("New Folder".localized) {
+                viewModel.createLocalFolder()
+            }
+            .disabled(!viewModel.canCreateLocalFolder)
+
             Button("Copy".localized) {
                 applySelection(effectiveIDs)
                 viewModel.copyFocusedSelection()
@@ -642,6 +670,11 @@ private struct RemoteBrowserTable: View {
             }
             .disabled(!canOpen(effectiveIDs))
 
+            Button("Refresh".localized) {
+                viewModel.refreshRemoteDirectory()
+            }
+            .disabled(!viewModel.canRefreshRemoteDirectory)
+
             Button("Copy".localized) {
                 applySelection(effectiveIDs)
                 viewModel.copyFocusedSelection()
@@ -742,6 +775,16 @@ private struct LocalTableNameCell: View {
                     viewModel.openLocalSelectionInFinder()
                 }
                 .disabled(viewModel.isBusy)
+
+                Button("Refresh".localized) {
+                    viewModel.refreshLocalDirectory()
+                }
+                .disabled(!viewModel.canRefreshLocalDirectory)
+
+                Button("New Folder".localized) {
+                    viewModel.createLocalFolder()
+                }
+                .disabled(!viewModel.canCreateLocalFolder)
 
                 Button("Copy".localized) {
                     viewModel.selectOnlyLocalItem(item)
@@ -870,6 +913,11 @@ private struct RemoteTableNameCell: View {
                     viewModel.openPrimarySelection()
                 }
                 .disabled(!item.isDirectory)
+
+                Button("Refresh".localized) {
+                    viewModel.refreshRemoteDirectory()
+                }
+                .disabled(!viewModel.canRefreshRemoteDirectory)
 
                 Button("Copy".localized) {
                     viewModel.prepareRemoteTransferSelection(for: item)

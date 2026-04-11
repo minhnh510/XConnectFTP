@@ -156,7 +156,10 @@
 "Choose a local root folder for this site to browse and upload/download." = "Choose a local root folder for this site to browse and upload/download.";
 "Opening parent folder..." = "Opening parent folder...";
 "Opening %@..." = "Opening %@...";
+"Refreshing local folder..." = "Refreshing local folder...";
+"Refreshed local folder." = "Refreshed local folder.";
 "Refreshing remote folder..." = "Refreshing remote folder...";
+"Refreshed remote folder." = "Refreshed remote folder.";
 "Uploading %lld item(s)..." = "Uploading %lld item(s)...";
 "Uploaded %@." = "Uploaded %@.";
 "Uploaded %lld items." = "Uploaded %lld items.";
@@ -165,8 +168,10 @@
 "Downloaded %lld items." = "Downloaded %lld items.";
 "Create Remote Folder" = "Create Remote Folder";
 "Enter a name for the new folder in %@." = "Enter a name for the new folder in %@.";
+"New Folder %d" = "New Folder %d";
 "Creating folder %@..." = "Creating folder %@...";
 "Created folder %@." = "Created folder %@.";
+"Could not create the local folder %@: %@." = "Could not create the local folder %1$@: %2$@.";
 "Copied %@." = "Copied %@.";
 "Copied %lld items." = "Copied %lld items.";
 "Pasting local items..." = "Pasting local items...";

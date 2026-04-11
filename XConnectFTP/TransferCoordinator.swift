@@ -246,8 +246,12 @@ actor TransferCoordinator {
         for (index, item) in normalizedItems.enumerated() {
             try Task.checkCancellation()
 
+            let localName = RemoteLocalNameResolver.localDestinationName(
+                remotePath: item.path,
+                fallbackName: item.name
+            )
             let destinationName = DuplicateNameResolver.uniqueName(
-                for: item.name,
+                for: localName,
                 isDirectory: item.isDirectory,
                 existingNames: existingNames,
                 reservedNames: &reservedNames
@@ -380,29 +384,34 @@ actor TransferCoordinator {
         progress: @escaping @Sendable (TransferSnapshot) -> Void,
         status: @escaping @Sendable (String) -> Void
     ) async throws {
+        let localName = RemoteLocalNameResolver.localDestinationName(
+            remotePath: item.path,
+            fallbackName: item.name
+        )
+
         if item.isDirectory {
-            status("Downloading %lld/%lld: %@".localized(Int64(batchIndex), Int64(batchTotal), item.name))
-            let destinationDirectory = localDirectory.appendingPathComponent(item.name, isDirectory: true)
+            status("Downloading %lld/%lld: %@".localized(Int64(batchIndex), Int64(batchTotal), localName))
+            let destinationDirectory = localDirectory.appendingPathComponent(localName, isDirectory: true)
             try FileManager.default.createDirectory(at: destinationDirectory, withIntermediateDirectories: true)
             try await downloadDirectoryContents(
                 remoteItem: item,
                 to: destinationDirectory,
                 batchIndex: batchIndex,
                 batchTotal: batchTotal,
-                displayPath: item.name,
+                displayPath: localName,
                 progress: progress,
                 status: status
             )
             return
         }
 
-        status("Downloading %lld/%lld: %@".localized(Int64(batchIndex), Int64(batchTotal), item.name))
+        status("Downloading %lld/%lld: %@".localized(Int64(batchIndex), Int64(batchTotal), localName))
         _ = try await ftpClient.download(remotePath: item.path, to: localDirectory) { snapshot in
             progress(Self.decorate(
                 snapshot,
                 itemIndex: batchIndex,
                 totalItems: batchTotal,
-                displayName: item.name
+                displayName: localName
             ))
         }
     }
@@ -414,8 +423,12 @@ actor TransferCoordinator {
             guard child.name != ".", child.name != ".." else {
                 continue
             }
+            let localName = RemoteLocalNameResolver.localDestinationName(
+                remotePath: child.path,
+                fallbackName: child.name
+            )
             if child.isDirectory {
-                let childDirectory = localDirectory.appendingPathComponent(child.name, isDirectory: true)
+                let childDirectory = localDirectory.appendingPathComponent(localName, isDirectory: true)
                 try FileManager.default.createDirectory(at: childDirectory, withIntermediateDirectories: true)
                 try await downloadDirectoryContents(remoteItem: child, to: childDirectory)
             } else {
@@ -439,10 +452,14 @@ actor TransferCoordinator {
             guard child.name != ".", child.name != ".." else {
                 continue
             }
-            let childDisplayPath = "\(displayPath)/\(child.name)"
+            let localName = RemoteLocalNameResolver.localDestinationName(
+                remotePath: child.path,
+                fallbackName: child.name
+            )
+            let childDisplayPath = "\(displayPath)/\(localName)"
 
             if child.isDirectory {
-                let childDirectory = localDirectory.appendingPathComponent(child.name, isDirectory: true)
+                let childDirectory = localDirectory.appendingPathComponent(localName, isDirectory: true)
                 try FileManager.default.createDirectory(at: childDirectory, withIntermediateDirectories: true)
                 try await downloadDirectoryContents(
                     remoteItem: child,
@@ -471,7 +488,11 @@ actor TransferCoordinator {
         let baseDirectory = try await tempTransferStore.prepareOperationDirectory(prefix: "remote-stage")
 
         if remoteItem.isDirectory {
-            let destinationDirectory = baseDirectory.appendingPathComponent(remoteItem.name, isDirectory: true)
+            let localName = RemoteLocalNameResolver.localDestinationName(
+                remotePath: remoteItem.path,
+                fallbackName: remoteItem.name
+            )
+            let destinationDirectory = baseDirectory.appendingPathComponent(localName, isDirectory: true)
             try FileManager.default.createDirectory(at: destinationDirectory, withIntermediateDirectories: true)
             try await downloadDirectoryContents(remoteItem: remoteItem, to: destinationDirectory)
             return ExportedRemoteItem(exportedURL: destinationDirectory, cleanupDirectoryURL: baseDirectory)

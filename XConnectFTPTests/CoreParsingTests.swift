@@ -56,6 +56,23 @@ final class CoreParsingTests: XCTestCase {
         XCTAssertEqual(FTPPath.parent(of: "/"), "/")
     }
 
+    func testRemoteLocalNameResolverUsesLeafComponentFromRemotePath() {
+        XCTAssertEqual(
+            RemoteLocalNameResolver.localDestinationName(
+                remotePath: "/templates/views/file.php",
+                fallbackName: "views/file.php"
+            ),
+            "file.php"
+        )
+        XCTAssertEqual(
+            RemoteLocalNameResolver.localDestinationName(
+                remotePath: "/templates/views",
+                fallbackName: "templates/views"
+            ),
+            "views"
+        )
+    }
+
     func testPassiveEndpointParsing() {
         let pasv = PassiveEndpoint.parsePASV(from: "227 Entering Passive Mode (192,168,1,2,195,80)")
         XCTAssertEqual(pasv?.host, "192.168.1.2")
