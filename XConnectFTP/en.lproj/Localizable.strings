@@ -93,6 +93,8 @@
 "iCloud sync status could not be determined." = "iCloud sync status could not be determined.";
 "Syncing saved sites…" = "Syncing saved sites…";
 "Last synced at %@." = "Last synced at %@.";
+"iCloud sync could not be enabled because the CloudKit production schema for saved sites has not been deployed. Saved sites were kept on this Mac and iCloud sync was turned off." = "iCloud sync could not be enabled because the CloudKit production schema for saved sites has not been deployed. Saved sites were kept on this Mac and iCloud sync was turned off.";
+"iCloud storage quota has been exceeded. Saved sites were kept on this Mac and iCloud sync was turned off. Free up iCloud storage, then turn sync on again." = "iCloud storage quota has been exceeded. Saved sites were kept on this Mac and iCloud sync was turned off. Free up iCloud storage, then turn sync on again.";
 "Saved site metadata syncs with iCloud. Passwords remain in the local Keychain on this Mac." = "Saved site metadata syncs with iCloud. Passwords remain in the local Keychain on this Mac.";
 "Saved site metadata, including the preferred local root path, syncs with iCloud. Passwords remain in the local Keychain on this Mac, and local folder access permission stays on each Mac." = "Saved site metadata, including the preferred local root path, syncs with iCloud. Passwords remain in the local Keychain on this Mac, and local folder access permission stays on each Mac.";
 "Could not read the Apple account credential." = "Could not read the Apple account credential.";

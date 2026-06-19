@@ -93,6 +93,8 @@
 "iCloud sync status could not be determined." = "Không xác định được trạng thái đồng bộ iCloud.";
 "Syncing saved sites…" = "Đang đồng bộ site đã lưu…";
 "Last synced at %@." = "Đồng bộ gần nhất lúc %@.";
+"iCloud sync could not be enabled because the CloudKit production schema for saved sites has not been deployed. Saved sites were kept on this Mac and iCloud sync was turned off." = "Không thể bật đồng bộ iCloud vì CloudKit production schema cho site đã lưu chưa được triển khai. Các site đã lưu vẫn được giữ trên máy Mac này và đồng bộ iCloud đã được tắt.";
+"iCloud storage quota has been exceeded. Saved sites were kept on this Mac and iCloud sync was turned off. Free up iCloud storage, then turn sync on again." = "Dung lượng iCloud đã vượt giới hạn. Các site đã lưu vẫn được giữ trên máy Mac này và đồng bộ iCloud đã được tắt. Hãy giải phóng dung lượng iCloud rồi bật lại đồng bộ.";
 "Saved site metadata syncs with iCloud. Passwords remain in the local Keychain on this Mac." = "Metadata của site đã lưu sẽ đồng bộ với iCloud. Password vẫn chỉ được giữ trong Keychain local trên máy Mac này.";
 "Saved site metadata, including the preferred local root path, syncs with iCloud. Passwords remain in the local Keychain on this Mac, and local folder access permission stays on each Mac." = "Metadata của site đã lưu, bao gồm đường dẫn thư mục gốc local ưu tiên, sẽ đồng bộ với iCloud. Password vẫn chỉ được giữ trong Keychain local trên máy Mac này, và quyền truy cập thư mục local vẫn được giữ riêng trên từng máy Mac.";
 "Could not read the Apple account credential." = "Không thể đọc thông tin đăng nhập tài khoản Apple.";

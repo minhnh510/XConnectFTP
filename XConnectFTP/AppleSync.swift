@@ -63,6 +63,20 @@ enum AppleCloudAvailability: Equatable {
     }
 }
 
+enum AppleSyncError: LocalizedError {
+    case productionSchemaUnavailable
+    case quotaExceeded
+
+    var errorDescription: String? {
+        switch self {
+        case .productionSchemaUnavailable:
+            return "iCloud sync could not be enabled because the CloudKit production schema for saved sites has not been deployed. Saved sites were kept on this Mac and iCloud sync was turned off.".localized
+        case .quotaExceeded:
+            return "iCloud storage quota has been exceeded. Saved sites were kept on this Mac and iCloud sync was turned off. Free up iCloud storage, then turn sync on again.".localized
+        }
+    }
+}
+
 enum AppleSyncResolution {
     case noChange
     case applyRemote(ConnectionProfilesSnapshot)
@@ -97,7 +111,7 @@ actor SavedSitesCloudSyncService {
                 }
 
                 if let error {
-                    continuation.resume(throwing: error)
+                    continuation.resume(throwing: Self.normalizedCloudError(error))
                     return
                 }
 
@@ -132,12 +146,63 @@ actor SavedSitesCloudSyncService {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             database.save(record) { savedRecord, error in
                 if let error {
-                    continuation.resume(throwing: error)
+                    continuation.resume(throwing: Self.normalizedCloudError(error))
                     return
                 }
                 _ = savedRecord
                 continuation.resume()
             }
+        }
+    }
+
+    private static func normalizedCloudError(_ error: Error) -> Error {
+        if let ckError = error as? CKError {
+            if ckError.isProductionSchemaRejection {
+                return AppleSyncError.productionSchemaUnavailable
+            }
+
+            if ckError.isQuotaExceeded {
+                return AppleSyncError.quotaExceeded
+            }
+        }
+
+        if error.cloudDiagnosticMessages.contains(where: { message in
+            message.localizedCaseInsensitiveContains("quota exceeded")
+        }) {
+            return AppleSyncError.quotaExceeded
+        }
+
+        return error
+    }
+}
+
+private extension CKError {
+    var isProductionSchemaRejection: Bool {
+        guard code == .serverRejectedRequest else {
+            return false
+        }
+
+        return cloudDiagnosticMessages.contains { message in
+            message.localizedCaseInsensitiveContains("production schema")
+        }
+    }
+
+    var isQuotaExceeded: Bool {
+        code == .quotaExceeded
+    }
+}
+
+private extension Error {
+    var cloudDiagnosticMessages: [String] {
+        let nsError = self as NSError
+        return [localizedDescription] + nsError.userInfo.values.compactMap { value in
+            if let message = value as? String {
+                return message
+            }
+            if let error = value as? NSError {
+                return error.localizedDescription
+            }
+            return nil
         }
     }
 }
@@ -350,10 +415,20 @@ final class AppleSyncController: ObservableObject {
             try await cloudService.save(snapshot: localSnapshot)
             lastSyncAt = Date()
             return .uploadedLocal
+        } catch let error as AppleSyncError {
+            disableSyncAfterRecoverableError(error)
+            return .noChange
         } catch {
             syncErrorMessage = error.localizedDescription
             throw error
         }
+    }
+
+    private func disableSyncAfterRecoverableError(_ error: LocalizedError) {
+        syncEnabled = false
+        defaults.set(false, forKey: DefaultsKey.syncEnabled)
+        syncErrorMessage = error.errorDescription ?? "iCloud sync is temporarily unavailable.".localized
+        syncGeneration = UUID()
     }
 
     private func credentialState(for userID: String) async -> ASAuthorizationAppleIDProvider.CredentialState {
